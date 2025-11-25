@@ -1,1 +1,3 @@
+__pycache__/
 other_experiments/
+*.env

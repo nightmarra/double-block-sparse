@@ -6,6 +6,9 @@ import torch.nn as nn
 import transformers
 import numpy as np
 
+from einops import rearrange
+
+
 DEBUG = False 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -19,6 +22,46 @@ def mag_prune(W, sp=0.6):
 
 def ent(p):
     return -(p * np.log2(p) + (1-p) * np.log2(1-p))
+
+# dblock_e = torch.cat((torch.ones([64, 64], device="cuda"), torch.zeros([64, 64], device="cuda")))
+# dblock_o = torch.cat((torch.zeros([64, 64], device="cuda"), torch.ones([64, 64], device="cuda")))
+# dblock = torch.cat((dblock_e, dblock_o), dim=1)
+# for _ in range(5):
+#     dblock = torch.cat((dblock, dblock), dim=1)
+# for _ in range(5):
+#     dblock = torch.cat((dblock, dblock), dim=0)
+
+# possible to permute and reshape, so on every block we can just call .sum()
+# einops
+
+
+def _mag_prune_mask(W, sp=0.6):
+    thres = (W).abs().flatten().sort()[0][int(W.numel() * sp)]
+    mask = ((W).abs() > thres)
+    return mask
+
+def _get_mask_2x2(
+    W_hat: torch.Tensor, 
+    U: torch.Tensor, 
+    bsparsity: float
+) -> torch.Tensor:
+    # W_hat... a 4096*4096 matrix
+    # we take 2x2 blocks and if norm is below thres, we set the whole block to 0
+
+    # get the 2x2 blocks and calculate norms
+    blocks = rearrange((W_hat+U).abs(), '(h bh) (w bw) -> h w bh bw', bh=2, bw=2)
+    block_norms = blocks.norm(dim=(-2, -1), p=2)
+    
+    # expand back to 4096*4096
+    expanded = block_norms.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
+
+    # construct the mask
+    thres = torch.quantile(expanded.abs().flatten(), bsparsity)
+    mask = (expanded.abs() > abs(thres.item()))
+
+    del blocks, block_norms, expanded
+    return mask
+
 
 # inner loop of the ||W-AB||^2 minization algorithm
 # ADMM is performed for m (iters) iterations
@@ -45,13 +88,12 @@ def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.
     Z = Z * norm2.unsqueeze(1)
     
     W_hat = XTX_inv2.matmul(XTW + rho_start*(Z-U))
-    bsparsity = min(0.99, 1 - nnz/W_hat.numel())
-
+    bsparsity = min(0.99, 1 - nnz/W_hat.numel()) # 0.76 or 0.84
+    
     for itt in range(iters):
         if itt < prune_iters and fixmask is None:
-            thres = (W_hat+U).abs().flatten().sort()[0][int(W_hat.numel() * bsparsity)]
-            mask = ((W_hat+U).abs() > thres) # TODO target: blocks here!!!
-            del thres
+            # mask = _mag_prune_mask(W_hat+U, bsparsity)
+            mask = _get_mask_2x2(W_hat=W_hat, U=U, bsparsity=bsparsity)
         if fixmask is not None:
             assert fixmask.shape == Z.shape
             mask = fixmask
@@ -61,15 +103,15 @@ def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.
         U = U + (W_hat - Z)    
         W_hat = XTX_inv.matmul(XTW + rho*(Z-U))
 
-    return Z / norm2.unsqueeze(1), U / norm2.unsqueeze(1)    
+    return Z / norm2.unsqueeze(1), U / norm2.unsqueeze(1)
 
 
 # this finds AB such that ||W-AB||^2_2 is minimized
 # XX is here for LLMs only
 # asp = sparsity of A
-def factorizeT(W, XX, asp=0.16, sp=0.4, iters=40, fixmask=None):
+def factorizeT(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
     if fixmask is None:
-        nza = int(W.shape[0]**2 * asp) # shape of A = W_rows * W_rows
+        nza = int(W.shape[0]**2 * bsp) # shape of A = W_rows * W_rows
     else:
         nza = (fixmask != 0).sum().item()
     nzb = int(W.numel() * sp - nza)
@@ -98,12 +140,12 @@ def factorizeT(W, XX, asp=0.16, sp=0.4, iters=40, fixmask=None):
 
 # this finds AB such that ||W-AB||^2_2 is minimized
 # XX is here for LLMs only
-def factorizef(W, XX, asp=0.16, sp=0.4, iters=40, fixmask=None):
+def factorizef(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
     if W.shape[0] >= W.shape[1]:
-        return factorizeT(W.T, XX, asp, sp=sp, fixmask=fixmask)
+        return factorizeT(W.T, XX, bsp, sp=sp, fixmask=fixmask)
     
     if fixmask is None:
-        nza = int(W.shape[0]**2 * asp)
+        nza = int(W.shape[0]**2 * bsp)
     else:
         nza = (fixmask != 0).sum().item()
     nzb = int(W.numel() * sp - nza)

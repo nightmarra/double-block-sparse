@@ -1,0 +1,41 @@
+- tried a big 64*64 alternating 1's and 0's mask in find_other2()
+    = result = strange improvement in the Frobenius norm
+    = works similarly with 1/0 or 0/1, both orders are an improvement
+FALSE ALARM, 50% mask is not what we want
+
+
+- original run for reference (on model.model.layers[3].self_attn.q_proj.weight)
+- Frobenius norm: 11.107711791992188
+
+- mag_prune on W for reference
+- Froebnius norm: 22.477331161499023
+
+-----------------------------------------------------------
+
+- tried a 2x2 block, forcing a block's MEAN into its values to create the mask
+- Frobenius norm: 32.370357513427734
+
+- tried a 2x2 block, forcing a block's MAX into its values to create the mask
+- Frobenius norm: 29.423126220703125
+
+- tried a 2x2 block, forcing a block's ABSMAX into its values to create the mask
+- Frobenius norm: 24.056304931640625
+        
+- tried a 2x2 block, forcing a block's ABSSUM into its values to create the mask
+- Frobenius norm: 23.81064224243164
+
+- tried a 2x2 block, forcing a block's FROBENIUS NORM into its values to create the mask
+- Frobenius norm: 23.465469360351562 (BEST)
+
+
+- tried a 2x2 block, forcing a block's NUCLEAR NORM into its values to create the mask
+- DNF
+
+- tried a 2x2 block, forcing a block's P-NORMS into its values to create the mask
+- Frobenius norm: 23.6-ish
+
+- tried a 2x2 block, forcing a block's GEOMETRIC MEAN into its values to create the mask
+- Frobenius norm: 28-ish
+
+- sparsity annealing (the block's Frobenius norm)
+- Frobenius norm: 25-ish
