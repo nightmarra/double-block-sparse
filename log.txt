@@ -25,7 +25,10 @@ FALSE ALARM, 50% mask is not what we want
 - Frobenius norm: 23.81064224243164
 
 - tried a 2x2 block, forcing a block's FROBENIUS NORM into its values to create the mask
-- Frobenius norm: 23.465469360351562 (BEST)
+- Frobenius norm: 23.465469360351562 (BEST)* - slightly worse if we start A_(0) at identity (24-ish)
+
+- 2x lower middle dimension (4096 -> 2048)
+- Frobenius norm: 26.483646392822266
 
 
 - tried a 2x2 block, forcing a block's NUCLEAR NORM into its values to create the mask
@@ -39,3 +42,61 @@ FALSE ALARM, 50% mask is not what we want
 
 - sparsity annealing (the block's Frobenius norm)
 - Frobenius norm: 25-ish
+
+
+- get_mask_1x2x1
+- Frobenius norm: 17.54475975036621
+
+- get_mask_1x2x1 (rowblock = ~rowblock)
+- Frobenius norm: 17.630828857421875
+
+- get_mask_2x2 (1x2)
+- Frobenius norm: 17.617027282714844
+
+- get_mask_2x2 (2x1)
+- Frobenius norm: 17.563209533691406
+
+
+- some 2:4 try (AMAZING)
+- Frobenius norm: 14.79001...
+
+
+--------------------------HIGHER MIDDLE DIMENSION------------------------
+
+- normal* for 2048
+- Frobenius norm: 13.227307319641113 (starting both A and B at identity)
+
+- 1.5x higher middle dimension (2048 -> 3072)
+- Frobenius norm: 13.603476524353027
+
+- 2x higher middle dimension (2048 -> 4096)
+- Frobenius norm: 14.374414443969727
+
+
+
+- 2:4 for 2048
+- Frobenius norm: 8.429323196411133
+
+- 2:4 for 2x higher middle dimension (2048 -> 4096)
+- Frobenius norm: 8.749316215515137
+
+
+
+----------------------THE 2:4 PLAN---------------------------------------
+- bezny double sparse s 50% sparse dokopy 25 A 25 B
+- FN: 7.575860023498535
+
+- A aj B maju 2:4 sparsity (25%)
+- FN: 10.377514839172363
+
+- cisto mag prune s 50% sparse
+- FN: 16.52720832824707
+
+- DBSF
+- FN: 17.724849700927734
+
+- A aj B maju 2:4 sparsity (50%) a mid je 2048
+- FN: 18.114635467529297
+
+- DBSF with 1.5x higher middle dimension
+- FN: 18.229673385620117

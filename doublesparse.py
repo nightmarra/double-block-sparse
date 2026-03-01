@@ -7,6 +7,7 @@ import transformers
 import numpy as np
 
 from einops import rearrange
+import matplotlib.pyplot as plt
 
 
 DEBUG = False 
@@ -15,7 +16,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
 
-def mag_prune(W, sp=0.6):
+def mag_prune(W, sp=0.5):
     thres = (W).abs().flatten().sort()[0][int(W.numel() * sp)]
     mask = ((W).abs() > thres)
     return W * mask
@@ -40,6 +41,7 @@ def _mag_prune_mask(W, sp=0.6):
     mask = ((W).abs() > thres)
     return mask
 
+# TODO optimizations
 def _get_mask_2x2(
     W_hat: torch.Tensor, 
     U: torch.Tensor, 
@@ -51,11 +53,15 @@ def _get_mask_2x2(
     # get the 2x2 blocks and calculate norms
     blocks = rearrange((W_hat+U).abs(), '(h bh) (w bw) -> h w bh bw', bh=2, bw=2)
     block_norms = blocks.norm(dim=(-2, -1), p=2)
-    
+
     # expand back to 4096*4096
     expanded = block_norms.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
 
     # construct the mask
+    # flat = expanded.abs().flatten()
+    # n = flat.numel()
+    # k = max(1, int(bsparsity * n))
+    # thres = torch.kthvalue(flat, k).values
     thres = torch.quantile(expanded.abs().flatten(), bsparsity)
     mask = (expanded.abs() > abs(thres.item()))
 
@@ -63,9 +69,79 @@ def _get_mask_2x2(
     return mask
 
 
+def _get_mask_1x2x1(
+    W_hat: torch.Tensor, 
+    U: torch.Tensor, 
+    bsparsity: float,
+    rowblock: bool
+) -> torch.Tensor:
+    # W_hat... a 4096*4096 matrix
+    # we take 2x2 blocks and if norm is below thres, we set the whole block to 0
+    if rowblock:
+        x, y = 1, 2
+    else:
+        x, y = 2, 1
+
+    # get the 2x2 blocks and calculate norms
+    blocks = rearrange((W_hat+U).abs(), '(h bh) (w bw) -> h w bh bw', bh=x, bw=y)
+    block_norms = blocks.norm(dim=(-2, -1), p=2)
+
+    # expand back to 4096*4096
+    expanded = block_norms.repeat_interleave(x, dim=0).repeat_interleave(y, dim=1)
+
+    # construct the mask
+    thres = torch.quantile(expanded.abs().flatten(), bsparsity)
+    mask = (expanded.abs() > abs(thres.item()))
+    
+    del blocks, block_norms, expanded
+    return mask
+
+
+def _get_mask_2_to_4(
+        W_hat: torch.Tensor, 
+        U: torch.Tensor, 
+        bsparsity: float) -> torch.Tensor:
+    W_U_sum = W_hat + U
+    rows = W_U_sum.shape[0]
+    thres = int(W_U_sum.numel() * (1 - bsparsity)) # 16% or 24% of elements
+
+    # create groups of 4 and sort the 4 elements in each one
+    W_U_sum_grouped = W_U_sum.reshape(rows, -1, 4)
+    g_sorted_elements, _ = W_U_sum_grouped.abs().sort(dim=-1, descending=True)
+    
+    # calculate norms of [top two elements] in each group
+    # then sort groups according to the result
+    # (we use norm as that performed best in usual block sparsity)
+    top2_sums = g_sorted_elements[:, :, :2].norm(dim=-1, p=2)
+    _, best_group_ids = top2_sums.flatten().sort(descending=True)
+    
+    group_take_count = (thres // 4) * 2
+    # each group contains 4 elements, so we divide by 4, but 2:4 will be applied,
+    # so we multiply by 2 to get the desired sparsity
+
+    # group-wise mask
+    # we get locations of groups where the calculated norms are the highest
+    # we keep these locations in the mask
+    all_groups_count = W_U_sum_grouped.shape[1]
+    g_mask = torch.zeros(rows * all_groups_count, dtype=torch.bool, device=W_U_sum.device)
+    g_mask[best_group_ids[:group_take_count]] = True
+    g_mask = g_mask.reshape(rows, all_groups_count)
+
+    # apply 2:4 in selected groups -> now we get back to 16%/24% sparsity
+    # we select top two elements in absolute value as they contribute the most to the norm
+    _, ids = W_U_sum_grouped.abs().topk(2, dim=-1, sorted=False)
+    mask = torch.zeros_like(W_U_sum_grouped, dtype=torch.bool)
+    mask = mask.scatter(-1, ids, True)
+    mask = mask & g_mask.unsqueeze(-1) # add dim to zero out the remaining groups
+    mask = mask.reshape(rows, -1)
+    
+    del W_U_sum_grouped, g_sorted_elements, top2_sums, g_mask
+    return mask
+
+
 # inner loop of the ||W-AB||^2 minization algorithm
 # ADMM is performed for m (iters) iterations
-def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.03, iters=5, prune_iters=2, fixmask=None):
+def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.03, iters=5, prune_iters=2, fixmask=None, rowblock=True):
     # Z_0 = identity
     # U_0 = zero matrix
     # X can be:
@@ -79,7 +155,7 @@ def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.
     XTX = An.T.matmul(An)
     XTX += torch.diag(torch.ones_like(XTX.diag())) * XTX.diag().mean() * reg
     
-    rho = 1 # penalty factor set to one
+    rho = 0.43 #  penalty factor set to one
     XTW = An.T.matmul(W)
     XTX_inv = torch.inverse(XTX + torch.eye(XTX.shape[1], device=XTX.device)*rho)
     XTX_inv2 = torch.inverse(XTX + torch.eye(XTX.shape[1], device=XTX.device)*rho_start)
@@ -90,10 +166,14 @@ def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.
     W_hat = XTX_inv2.matmul(XTW + rho_start*(Z-U))
     bsparsity = min(0.99, 1 - nnz/W_hat.numel()) # 0.76 or 0.84
     
+    rowblock = True
     for itt in range(iters):
         if itt < prune_iters and fixmask is None:
-            # mask = _mag_prune_mask(W_hat+U, bsparsity)
-            mask = _get_mask_2x2(W_hat=W_hat, U=U, bsparsity=bsparsity)
+            if rowblock:
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity)
+            else:
+                mask = _mag_prune_mask(W_hat+U, bsparsity)
+            # mask = _get_mask_2x2_fix(norm2, W_hat=W_hat, U=U, bsparsity=bsparsity)
         if fixmask is not None:
             assert fixmask.shape == Z.shape
             mask = fixmask
@@ -103,18 +183,23 @@ def find_other2(X, W, nnz, Z, U, print_sc=None, debug=False, reg=0, rho_start=0.
         U = U + (W_hat - Z)    
         W_hat = XTX_inv.matmul(XTW + rho*(Z-U))
 
-    return Z / norm2.unsqueeze(1), U / norm2.unsqueeze(1)
-
+    mask = mask.cpu()
+    plt.imshow(mask[:16, :16])
+    
+    return (Z) / norm2.unsqueeze(1), U / norm2.unsqueeze(1)
+# mask * (W_hat + U_copy)
 
 # this finds AB such that ||W-AB||^2_2 is minimized
 # XX is here for LLMs only
 # asp = sparsity of A
 def factorizeT(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
+    SF = 1 # scaling factor
+
     if fixmask is None:
-        nza = int(W.shape[0]**2 * bsp) # shape of A = W_rows * W_rows
+        nza = int(SF*(W.shape[0]**2) * bsp) # shape of A = W_rows * W_rows
     else:
         nza = (fixmask != 0).sum().item()
-    nzb = int(W.numel() * sp - nza)
+    nzb = int(SF*W.numel() * sp - nza)
 
     # "for the pruning of LLMs, we found that it is better
     # to project the weight matrix multiplied
@@ -124,16 +209,26 @@ def factorizeT(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
     Wn = W * norm
     
     # solve the projection problem
-    A = torch.eye(W.shape[0], device=W.device)  # identity
+    # A = torch.eye(n=W.shape[0], m=int(SF*W.shape[0]), device=W.device)  # identity
+    # B = torch.eye(n=int(SF*W.shape[0]), m=W.shape[0], device=W.device)  # identity
+
+    A = torch.eye(W.shape[0], device=W.device)
     B = mag_prune(Wn, (1 - nzb/2/W.numel()))    # magnitude pruning of input
+
     U_a = torch.zeros_like(A)
     U_b = torch.zeros_like(B)
 
     # inner loop
     for itt in range(iters):
         rho_start = min(1.0, itt / (iters-3))**3 # annealing
-        A, U_a = (x.T for x in find_other2(B.T, Wn.T, nza, A.T, U_a.T, reg=1e-2, debug=False, rho_start=rho_start, fixmask=fixmask))
-        B, U_b = find_other2(A, Wn, nzb, B, U_b, reg=1e-2, debug=False, rho_start=rho_start)
+        A, U_a = (x.T for x in find_other2(
+                                   B.T, Wn.T, nza, A.T, U_a.T, reg=1e-2, debug=False, rho_start=rho_start, fixmask=fixmask, rowblock=True
+                               )
+                            )
+        B, U_b = find_other2(
+                     A, Wn, nzb, B, U_b, reg=1e-2, debug=False, rho_start=rho_start, rowblock=False
+                 )
+        # print(f"A_shape = {A.shape}, B_shape = {B.shape}")
 
     return ((A / norm).matmul(B)).T, B.T, (A / norm).T
 
@@ -141,7 +236,7 @@ def factorizeT(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
 # this finds AB such that ||W-AB||^2_2 is minimized
 # XX is here for LLMs only
 def factorizef(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
-    if W.shape[0] >= W.shape[1]:
+    if W.shape[0] >= W.shape[1]: # > ???
         return factorizeT(W.T, XX, bsp, sp=sp, fixmask=fixmask)
     
     if fixmask is None:
@@ -166,8 +261,14 @@ def factorizef(W, XX, bsp=0.16, sp=0.4, iters=40, fixmask=None):
     # inner loop
     for itt in range(iters):
         rho_start = min(1.0, itt / (iters-3))**3 # annealing
-        A, U_a = (x.T for x in find_other2(B.T, Wn.T, nza, A.T, U_a.T, reg=1e-2, debug=False, rho_start=rho_start, fixmask=fixmask))
-        B, U_b = find_other2(A, Wn, nzb, B, U_b, reg=1e-2, debug=False, rho_start=rho_start)
+        A, U_a = (x.T for x in find_other2(
+                                   B.T, Wn.T, nza, A.T, U_a.T, reg=1e-2, debug=False, rho_start=rho_start, fixmask=fixmask, rowblock=True
+                               )
+                            )
+        B, U_b = find_other2(
+                     A, Wn, nzb, B, U_b, reg=1e-2, debug=False, rho_start=rho_start, rowblock=False
+                 )
+        print(f"A_shape = {A.shape}, B_shape = {B.shape}")
         
     return A.matmul(B / norm), A, B / norm
 
@@ -278,3 +379,16 @@ class DoubleSparse:
     # error double sparse
     # error after making a 2*1 or 2*2 block, prune
 # if it makes sense, connect into LLM and see
+
+
+
+# try 2x1 in A and 1x2 in B or vice versa (4 options)
+# middle dimension exploration (larger)
+# optionally 2:4, and combine with larger middle dimension
+
+# 2:4 plan:
+# - A aj B maju 2:4 sparsity (50%) a mid je 2048
+# - cisto mag prune s 50% sparse
+# - bezny doubple sparse s 50% sparse dokopy 25 A 25 B
+
+# plt.imshow(mask[:32,:32])
