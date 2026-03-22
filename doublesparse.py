@@ -41,32 +41,28 @@ def _mag_prune_mask(W, sp=0.6):
     mask = ((W).abs() > thres)
     return mask
 
-# TODO optimizations
 def _get_mask_2x2(
-    W_hat: torch.Tensor, 
-    U: torch.Tensor, 
+    W_hat: torch.Tensor,
+    U: torch.Tensor,
     bsparsity: float
 ) -> torch.Tensor:
-    # W_hat... a 4096*4096 matrix
-    # we take 2x2 blocks and if norm is below thres, we set the whole block to 0
+    h, w = W_hat.shape
 
-    # get the 2x2 blocks and calculate norms
-    blocks = rearrange((W_hat+U).abs(), '(h bh) (w bw) -> h w bh bw', bh=2, bw=2)
-    block_norms = blocks.norm(dim=(-2, -1), p=2)
+    # Reshape into 2x2 blocks — no einops overhead, no abs() needed (L2 norm is sign-invariant)
+    blocks = (W_hat + U).reshape(h // 2, 2, w // 2, 2)
 
-    # expand back to 4096*4096
-    expanded = block_norms.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
+    # Squared norms preserve ordering → skip sqrt entirely
+    block_norms_sq = blocks.pow(2).sum(dim=(1, 3))  # (h//2, w//2)
 
-    # construct the mask
-    # flat = expanded.abs().flatten()
-    # n = flat.numel()
-    # k = max(1, int(bsparsity * n))
-    # thres = torch.kthvalue(flat, k).values
-    thres = torch.quantile(expanded.abs().flatten(), bsparsity)
-    mask = (expanded.abs() > abs(thres.item()))
+    # kthvalue on n/4 elements instead of n, no large float expansion
+    flat = block_norms_sq.flatten()
+    k = max(1, int(bsparsity * flat.numel()))
+    thres = torch.kthvalue(flat, k).values
 
-    del blocks, block_norms, expanded
-    return mask
+    # Expand a bool mask (~4x cheaper than expanding floats)
+    block_mask = block_norms_sq > thres          # (h//2, w//2)
+    return block_mask.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
+
 
 
 def _get_mask_1x2x1(
