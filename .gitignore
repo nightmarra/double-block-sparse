@@ -1,3 +1,5 @@
 __pycache__/
 other_experiments/
 *.env
+*.venv
+*.ipynb_checkpoints
