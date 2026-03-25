@@ -11,6 +11,6 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
     "seaborn>=0.13.2",
-    "torch==2.4",
+    "torch==2.5.0",
     "transformers>=5.3.0",
 ]
