@@ -160,3 +160,17 @@ dsf: 6.8805365562438965
 RHO = 1:
 dsf: 7.648422718048096
     dbsf: 18.093034744262695
+
+ 
+1. TETRIS (max 0.8% improvement)
+2. cluster_perm (0.05%-0.12% improvement)
+3. > vs >= (q, o diff)
+4. čo zbehnúť na celom modeli
+    2x1/1x2 bloky, 2:4 sparse + cluster_perm
+5. sparsity rozloženie (pre obdĺžnikové matice) (percentá) 50% + vyskusat rozlozenie
+6. runtime otázka
+    original alg + mag_prune_mask = 156.27s per layer (= 1 hour 23 minutes for full model)
+    my alg + 2x2 block mask       = 191.31s per layer (= 1 hour 42 minutes for full model)
+
+c4 calibrate + wikitext measurement
+kl sa dá pri merani
