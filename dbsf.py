@@ -40,7 +40,7 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
 
     U = U * norm2.unsqueeze(1)
     Z = Z * norm2.unsqueeze(1)
-    
+
     # W_hat = XTX_inv2.matmul(XTW + rho_start*(Z-U))
     RHS_start = XTW + rho_start * (Z - U)
     W_hat = torch.cholesky_solve(RHS_start, L2)
@@ -90,26 +90,28 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     # move to fp32 for factorization
     W = W.float()
     XX = XX.float()
+
+    # 'for the pruning of LLMs, we found that it is better
+    # to project the weight matrix multiplied
+    # by input feature norm'
+    # norm = torch.ones_like(norm)               # for vision models
+    norm = XX.diag().sqrt() + 1e-8
     
     transpose = False
     if W.shape[0] > W.shape[1]: # > ???
         W = W.T
         transpose = True
     
-    nza = int(W.shape[0]*W.shape[1] * bsp)
+    nza = int(W.shape[0]**2 * bsp*2.4)
     nzb = int(W.numel() * sp - nza)
-
-    # 'for the pruning of LLMs, we found that it is better
-    # to project the weight matrix multiplied
-    # by input feature norm'
-    if transpose:
-        norm = XX.diag().sqrt().unsqueeze(1) + 1e-8
-    else:
-        norm = XX.diag().sqrt() + 1e-8
-    # norm = torch.ones_like(norm)               # for vision models
-    Wn = W * norm
-
     
+    if W.shape[1] == norm.shape[0]:
+        Wn = W * norm.unsqueeze(0)
+    elif W.shape[0] == norm.shape[0]:
+        Wn = W * norm.unsqueeze(1)
+    else:
+        raise ValueError(f"Norm shape {norm.shape} incompatible with W {W.shape}")
+
     # solve the projection problem
     if mid_dim_scale == 1:
         A = torch.eye(W.shape[0], device=W.device, dtype=torch.float32)  # identity
@@ -150,17 +152,20 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
         # if itt == iters - 1:
         #     plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
 
-    if transpose:
-        print(f'A.size() = {A.size()}')
-        print(f'B.size() = {B.size()}')
-        res_A = (A / norm).T.to(original_dtype)
-        res_B = B.T.to(original_dtype)
-        return res_B @ res_A, res_B, res_A
+    # undo normalization
+    if B.shape[1] == norm.shape[0]:
+        B = B / norm.unsqueeze(0)
+    elif B.shape[0] == norm.shape[0]:
+        B = B / norm.unsqueeze(1)
     else:
-        norm = norm.unsqueeze(0)    
-        res_A = A.to(original_dtype)
-        res_B = (B / norm).to(original_dtype)
-        return res_A @ res_B, res_A, res_B
+        raise ValueError(f"Norm shape {norm.shape} incompatible with B {B.shape}")
+
+    if transpose:
+        res = (B.T @ A.T).to(original_dtype)
+        return res, B.T.to(original_dtype), A.T.to(original_dtype)
+    else:
+        res = (A @ B).to(original_dtype)
+        return res, A.to(original_dtype), B.to(original_dtype)
 
 
 def finalize(XX, W, A, B):
@@ -193,11 +198,11 @@ def factorize(W,
               mid_dim_scale=1, 
               run_finalize=False):
     W_temp, A_temp, B = _factorize_init(W, XX, mask_type=mask_type, bsp=bsp, sp=sp, mid_dim_scale=mid_dim_scale)
-    print("Error pre-finalization: ", (W_temp - W).matmul(XX).matmul((W_temp - W).T).diag().sum().item())
-
     if not run_finalize:
         return W_temp, A_temp.cpu(), B.cpu()
     
+    print("Error pre-finalization: ", (W_temp - W).matmul(XX).matmul((W_temp - W).T).diag().sum().item())
+
     A_final = finalize(XX, W, A_temp, B)
     W_final = A_final.matmul(B)
     assert W_final.shape == W.shape

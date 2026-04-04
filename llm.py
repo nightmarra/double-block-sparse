@@ -68,11 +68,11 @@ def prune_model(model):
     print(len(layers_to_replace))
 
     for name, layer in layers_to_replace:
+        print(f"\nCurrently pruning: {name}")
         dtype = layer.weight.dtype
         W = layer.weight.data
-        print(W.shape)
 
-        XX = torch.eye(W.shape[1], device=W.device)
+        XX = torch.eye(W.shape[1], device=W.device, dtype=dtype)
         prod, A, B = factorize(W, XX, mask_type='blocks', bsp=0.25, sp=0.5)
         mid_dim = A.shape[1]
         layer_R = nn.Linear(layer.in_features, mid_dim, bias=False, dtype=dtype)
@@ -86,9 +86,6 @@ def prune_model(model):
 
         nz_count_A = torch.count_nonzero(A_cpu).item()
         nz_count_B = torch.count_nonzero(B_cpu).item()
-
-        print(f'A.size() = {A_cpu.size()}')
-        print(f'B.size() = {B_cpu.size()}')
 
         n_a = A_cpu.size(dim=0)
         m_a = A_cpu.size(dim=1)
@@ -109,7 +106,6 @@ def prune_model(model):
             attr_name = name
             
         setattr(parent, attr_name, FactorizedLinear(layer_R, layer_L))
-        print(f'Replaced {name} with FactorizedLinear (Bottleneck: {mid_dim})')
         torch.cuda.empty_cache()
 
 ##########################

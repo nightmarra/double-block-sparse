@@ -9,7 +9,7 @@ from dbsf import factorize
 def test_mag_prune(matrix, sp: int):
     torch.cuda.synchronize()
     
-    identity = torch.eye(matrix.shape[0], device=matrix.device)
+    identity = torch.eye(matrix.shape[1], device=matrix.device)
     prod = mag_prune(matrix, sp=sp)
 
     frobenius = torch.norm(matrix - prod, p='fro')
@@ -40,7 +40,7 @@ def test_double_sparse(matrix,
     torch.cuda.synchronize()
     
     matrix = matrix.to(dtype=torch.float32)
-    identity = torch.eye(matrix.shape[0], device=matrix.device)
+    identity = torch.eye(matrix.shape[1], device=matrix.device)
     prod, A, B = factorize(matrix, 
                             identity, 
                             bsp = (1-b_bias)*total_sp, 

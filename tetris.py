@@ -90,19 +90,26 @@ def _factorize_tetris(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters
     W = W.float()
     XX = XX.float()
 
+    # 'for the pruning of LLMs, we found that it is better
+    # to project the weight matrix multiplied
+    # by input feature norm'
+    # norm = torch.ones_like(norm)               # for vision models
+    norm = XX.diag().sqrt() + 1e-8
+    
     transpose = False
-    if W.shape[0] > W.shape[1]: 
+    if W.shape[0] > W.shape[1]: # > ???
         W = W.T
         transpose = True
     
-    nza = int(W.shape[0]*W.shape[1] * bsp)
+    nza = int(W.shape[0]**2 * bsp*2.4)
     nzb = int(W.numel() * sp - nza)
-
-    if transpose:
-        norm = XX.diag().sqrt().unsqueeze(1) + 1e-8
+    
+    if W.shape[1] == norm.shape[0]:
+        Wn = W * norm.unsqueeze(0)
+    elif W.shape[0] == norm.shape[0]:
+        Wn = W * norm.unsqueeze(1)
     else:
-        norm = XX.diag().sqrt() + 1e-8
-    Wn = W * norm
+        raise ValueError(f"Norm shape {norm.shape} incompatible with W {W.shape}")
     
     k_dim = int(mid_dim_scale * W.shape[0])
     if mid_dim_scale == 1:
@@ -149,14 +156,17 @@ def _factorize_tetris(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters
         except NameError:
             continue
         
-    if transpose:
-        print(f'A.size() = {A.size()}')
-        print(f'B.size() = {B.size()}')
-        res_A = (A / norm).T.to(original_dtype)
-        res_B = B.T.to(original_dtype)
-        return res_B @ res_A, res_B, res_A
+     # undo normalization
+    if B.shape[1] == norm.shape[0]:
+        B = B / norm.unsqueeze(0)
+    elif B.shape[0] == norm.shape[0]:
+        B = B / norm.unsqueeze(1)
     else:
-        norm = norm.unsqueeze(0)    
-        res_A = A.to(original_dtype)
-        res_B = (B / norm).to(original_dtype)
-        return res_A @ res_B, res_A, res_B
+        raise ValueError(f"Norm shape {norm.shape} incompatible with B {B.shape}")
+
+    if transpose:
+        res = (B.T @ A.T).to(original_dtype)
+        return res, B.T.to(original_dtype), A.T.to(original_dtype)
+    else:
+        res = (A @ B).to(original_dtype)
+        return res, A.to(original_dtype), B.to(original_dtype)
