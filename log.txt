@@ -1,4 +1,4 @@
-- tried a big 64*64 alternating 1's and 0's mask in find_other2()
+- tried a big 64*64 alternating 1's and 0's mask in find_other()
     = result = strange improvement in the Frobenius norm
     = works similarly with 1/0 or 0/1, both orders are an improvement
 FALSE ALARM, 50% mask is not what we want
