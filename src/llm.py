@@ -107,7 +107,7 @@ def prune_model(model):
         setattr(parent, attr_name, FactorizedLinear(layer_R, layer_L))
         torch.cuda.empty_cache()
 
-    filepath = "./pruned/"
+    filepath = "./../pruned/"
     model.save_pretrained(filepath)
 
 ##########################
