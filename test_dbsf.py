@@ -1,8 +1,8 @@
 import torch
 from typing import Literal
 
-from .masks import mag_prune
-from .dbsf import factorize
+from masks import mag_prune
+from dbsf import factorize
 
 
 @torch.no_grad()
@@ -46,7 +46,8 @@ def test_double_sparse(matrix,
                             bsp = (1-b_bias)*total_sp, 
                             sp = total_sp, 
                             mid_dim_scale = mid_dim_scale,
-                            mask_type = mask_type
+                            mask_type = mask_type,
+                            run_finalize=True
     )
 
     frobenius = torch.norm(prod - matrix, p='fro')
@@ -81,21 +82,21 @@ def test_double_sparse(matrix,
 
 
 @torch.no_grad()
-def test_double_block_sparse(total_sp, 
+def test_double_block_sparse(matrix, total_sp, 
                        b_bias, 
                        mid_dim_scale):
-    return test_double_sparse(total_sp, b_bias, mid_dim_scale, mask_type='blocks')
+    return test_double_sparse(matrix, total_sp, b_bias, mid_dim_scale, mask_type='blocks')
 
 @torch.no_grad()
-def test_2to4_A_B(sp=0.25, 
+def test_2to4_A_B(matrix, sp=0.25, 
                   mid_dim_scale=1):
-    return test_double_sparse(total_sp=2*sp, b_bias=0.5, mid_dim_scale=mid_dim_scale, mask_type='2to4')
+    return test_double_sparse(matrix, total_sp=2*sp, b_bias=0.5, mid_dim_scale=mid_dim_scale, mask_type='2to4')
 
 @torch.no_grad()
-def test_1x2_2x1(sp=0.25, 
+def test_1x2_2x1(matrix, sp=0.25, 
                  mid_dim_scale=1):
-    return test_double_sparse(total_sp=2*sp, b_bias=0.5, mid_dim_scale=mid_dim_scale, mask_type='blocks_alt')
+    return test_double_sparse(matrix, total_sp=2*sp, b_bias=0.5, mid_dim_scale=mid_dim_scale, mask_type='blocks_alt')
 
 @torch.no_grad()
-def test_hybrid(asp=0.25, bsp=0.25):
-    return test_double_sparse(total_sp=asp+bsp, b_bias=bsp/(asp+bsp), mid_dim_scale=1, mask_type='hybrid')
+def test_hybrid(matrix, asp=0.25, bsp=0.25):
+    return test_double_sparse(matrix, total_sp=asp+bsp, b_bias=bsp/(asp+bsp), mid_dim_scale=1, mask_type='hybrid')

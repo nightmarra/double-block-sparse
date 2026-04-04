@@ -9,7 +9,7 @@ import math
 import random
 import time
 
-from .dbsf import factorize
+from dbsf import factorize
 
 
 def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):

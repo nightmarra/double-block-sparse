@@ -1,11 +1,11 @@
 import torch
 
-from .masks import mag_prune
-from .masks import _mag_prune_mask
-from .masks import _block_mask
-from .masks import _get_mask_2_to_4
-from .masks import plot_masks
-from .norm_perm import cluster_perm
+from masks import mag_prune
+from masks import _mag_prune_mask
+from masks import _block_mask
+from masks import _get_mask_2_to_4
+from masks import plot_masks
+from norm_perm import cluster_perm
 
 
 # inner loop of the ||W-AB||_2 minization algorithm

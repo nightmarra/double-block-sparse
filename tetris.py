@@ -1,11 +1,11 @@
 import torch
 
-from .dbsf import find_other
-from .masks import mag_prune
-from .masks import _mag_prune_mask
-from .masks import _block_mask
-from .masks import _get_mask_2_to_4
-from .masks import plot_masks
+from dbsf import find_other
+from masks import mag_prune
+from masks import _mag_prune_mask
+from masks import _block_mask
+from masks import _get_mask_2_to_4
+from masks import plot_masks
 
 
 def apply_tetris_reordering(A: torch.Tensor, B: torch.Tensor, prune_fn, epsilon: float = 1e-5, max_outer_iters: int = 10, max_inner_iters: int = 100):
