@@ -101,7 +101,7 @@ def _factorize_tetris(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters
         W = W.T
         transpose = True
     
-    nza = int(W.shape[0]**2 * bsp*2.4)
+    nza = int(W.shape[0]**2 * bsp*2)
     nzb = int(W.numel() * sp - nza)
     
     if W.shape[1] == norm.shape[0]:

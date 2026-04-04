@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import transformers
-import wandb
 from datasets import load_dataset
 from transformers import TextStreamer
 
@@ -107,6 +106,9 @@ def prune_model(model):
             
         setattr(parent, attr_name, FactorizedLinear(layer_R, layer_L))
         torch.cuda.empty_cache()
+
+    filepath = "./pruned/"
+    model.save_pretrained(filepath)
 
 ##########################
 
@@ -324,7 +326,7 @@ def llama_sequential(model):
 
 # Evaluation on Wikitext2
 @torch.no_grad()
-def llama_eval(model, testenc, dataset: str, log_wandb: bool = False):
+def llama_eval(model, testenc):
     print("Evaluating ...")
 
     testenc = testenc.input_ids
@@ -395,7 +397,5 @@ def llama_eval(model, testenc, dataset: str, log_wandb: bool = False):
         
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
-    if log_wandb:
-        wandb.log({f"{dataset}/perplexity": ppl.item()})
 
     model.config.use_cache = use_cache
