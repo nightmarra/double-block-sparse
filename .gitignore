@@ -1,5 +1,6 @@
 __pycache__/
 other_experiments/
+results/
 *.env
 *.venv
 *.ipynb_checkpoints

@@ -1,9 +1,13 @@
 import torch
 import torch.nn as nn
 import transformers
+from accelerate import dispatch_model, infer_auto_device_map
+from accelerate.hooks import remove_hook_from_module
+from accelerate.utils import get_balanced_memory
 from datasets import load_dataset
-from transformers import TextStreamer
+from transformers import AutoModelForCausalLM, TextStreamer
 
+import gc
 import math
 import random
 import time
@@ -118,17 +122,6 @@ NSAMPLES = 128
 NO_FINAL = True
 SPARSITY = 0.5
 
-def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
-    if type(module) in layers:
-        return {name: module}
-    res = {}
-    for name1, child in module.named_children():
-        res.update(find_layers(
-            child, layers=layers, name=name + '.' + name1 if name != '' else name1
-        ))
-    return res
-
-
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
     testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
@@ -220,7 +213,12 @@ class DoubleSparse:
         W = W.float()
         tick = time.time()
 
-        W2, _, _ = factorize(W, self.H, sparsity, nofinal=self.nofinal, fixmask=None)
+        W2, _, _ = factorize(W=W, 
+                             XX=self.H, 
+                             mask_type='blocks', 
+                             bsp=int(sparsity/2), 
+                             sp=sparsity, 
+                             run_finalize=not self.nofinal)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -237,20 +235,41 @@ class DoubleSparse:
         torch.cuda.empty_cache()
 
 
+def _move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    elif isinstance(obj, tuple):
+        return tuple(_move_to_device(v, device) for v in obj)
+    elif isinstance(obj, list):
+        return [_move_to_device(v, device) for v in obj]
+    return obj
+
+
 # Calibration on C4
 @torch.no_grad()
-def llama_sequential(model):
-    print("Starting...")
+def llama_sequential(model, dataloader):
+    for _, module in model.named_modules():
+        remove_hook_from_module(module)
+    model.cpu()
+    torch.cuda.empty_cache()
+
+    print("Starting calibration...")
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.layers
-
     dtype = next(iter(model.parameters())).dtype
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    first_batch = next(iter(dataloader))[0]
+    seqlen = first_batch.shape[1]
+
     inps = torch.zeros(
-        (NSAMPLES, model.seqlen, model.config.hidden_size), dtype=dtype, device="cuda"
+        (NSAMPLES, seqlen, model.config.hidden_size), dtype=dtype, device='cpu'
     )
-    cache = {"i": 0, "attention_mask": None}
+    cache = {"i": 0, "kwargs": None} # kwargs = rotary embeddings, attention mask...
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -258,26 +277,33 @@ def llama_sequential(model):
             self.module = module
 
         def forward(self, inp, **kwargs):
-            inps[cache["i"]] = inp
+            inps[cache["i"]] = inp.cpu()
             cache["i"] += 1
-            cache["attention_mask"] = kwargs["attention_mask"]
+            cache["kwargs"] = _move_to_device(kwargs, 'cpu') 
             raise ValueError
 
     layers[0] = Catcher(layers[0])
+    for batch in dataloader:
+        try:
+            model(batch[0].cpu()) 
+        except ValueError:
+            pass
+
     layers[0] = layers[0].module
-    layers[0] = layers[0].cpu()
-    model.model.embed_tokens = model.model.embed_tokens.cpu()
-    model.model.norm = model.model.norm.cpu()
     torch.cuda.empty_cache()
+    caught_kwargs = cache["kwargs"]
 
-    outs = torch.zeros_like(inps)
-    attention_mask = cache["attention_mask"]
-
-    print("Ready.")
-
-    quantizers = {}
+    # everything should be on CPU at this point
+    # now we begin the process (for each layer):
+    # 1. move layer + inputs to GPU
+    # 2. process
+    # 3. return to CPU
+    # loop start
     for i in range(len(layers)):
-        layer = layers[i]
+        # STEP 1 (layer)
+        layer = layers[i].to(device)
+        current_layer_kwargs = _move_to_device(caught_kwargs, device)
+
         full = find_layers(layer)
         sequential = [list(full.keys())]
 
@@ -285,22 +311,28 @@ def llama_sequential(model):
             subset = {n: full[n] for n in names}
             gpts = {}
             for name in subset:
-                gpts[name] = DoubleSparse(subset[name], nofinal=NO_FINAL, fixmask=None)
+                gpts[name] = DoubleSparse(subset[name], nofinal=NO_FINAL)
 
             def add_batch(name):
                 def tmp(_, inp, out):
                     gpts[name].add_batch(inp[0].data, out.data)
-
                 return tmp
 
             handles = []
             for name in subset:
                 handles.append(subset[name].register_forward_hook(add_batch(name)))
+
             for j in range(NSAMPLES):
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+                # STEP 1 (inputs)
+                cur_inp = inps[j:j+1].to(device)
+                # STEP 2
+                layer_out = layer(cur_inp, **current_layer_kwargs)[0]
+                # STEP 3 (inputs) to save space on the GPU
+                inps[j] = layer_out.squeeze(0).cpu()
+                del cur_inp, layer_out
+
             for h in handles:
                 h.remove()
-            del outs
 
             for name in subset:
                 print(i, name)
@@ -309,93 +341,224 @@ def llama_sequential(model):
                 gpts[name].fasterprune(sparsity)
                 gpts[name].free()
 
-        outs = torch.zeros_like(inps)
-        for j in range(NSAMPLES):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
-
+        # STEP 3 (layer)
         layers[i] = layer.cpu()
         del layer
         del gpts
         torch.cuda.empty_cache()
 
-        inps, outs = outs, inps
-
     model.config.use_cache = use_cache
-    return quantizers
+    print("Sequential pruning finished. Model is on CPU.")
+    # loop end
 
-
-# Evaluation on Wikitext2
-@torch.no_grad()
-def llama_eval(model, testenc):
-    print("Evaluating ...")
-
-    testenc = testenc.input_ids
-    nsamples = testenc.numel() // model.seqlen
-
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
-    layers = model.model.layers
-
-    dtype = next(iter(model.parameters())).dtype
-    inps = torch.zeros(
-        (nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device="cuda"
+    # now the model is on CPU, we return it back to GPUs
+    max_memory = get_balanced_memory(
+        model,
+        dtype=dtype,
+        low_zero=False,
+        no_split_module_classes=["LlamaDecoderLayer"],
     )
-    cache = {"i": 0, "attention_mask": None}
+    device_map = infer_auto_device_map(
+        model,
+        max_memory=max_memory,
+        dtype=dtype,
+        no_split_module_classes=["LlamaDecoderLayer"],
+    )
+    model = dispatch_model(model, device_map=device_map)
+    print(f"Model dispatched on GPUs with device map: {device_map}")
+
+    return model
+
+
+# Inner loop for evaluation extracted
+# Keeps the model on CPU
+@torch.no_grad()
+def _run_layer_loop(model, testenc_ids, nsamples, seqlen):
+    for _, module in model.named_modules():
+        remove_hook_from_module(module)
+    model.cpu()
+    torch.cuda.empty_cache()
+
+    layers = model.model.layers
+    dtype = next(iter(model.parameters())).dtype
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    inps = torch.zeros(
+        (nsamples, seqlen, model.config.hidden_size), dtype=dtype, device="cpu"
+    )
+    cache = {"i": 0, "kwargs": None}
 
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
             self.module = module
-
         def forward(self, inp, **kwargs):
-            inps[cache["i"]] = inp
+            inps[cache["i"]] = inp.cpu()
             cache["i"] += 1
-            cache["attention_mask"] = kwargs["attention_mask"]
+            cache["kwargs"] = _move_to_device(kwargs, "cpu")
             raise ValueError
 
     layers[0] = Catcher(layers[0])
     for i in range(nsamples):
-        batch = testenc[:, (i * model.seqlen) : ((i + 1) * model.seqlen)]
+        batch = testenc_ids[:, (i * seqlen):((i+1) * seqlen)]
         try:
             model(batch)
         except ValueError:
             pass
+
     layers[0] = layers[0].module
-
-    layers[0] = layers[0].cpu()
-    model.model.embed_tokens = model.model.embed_tokens.cpu()
     torch.cuda.empty_cache()
-
-    outs = torch.zeros_like(inps)
-    attention_mask = cache["attention_mask"]
+    caught_kwargs = cache["kwargs"]
 
     for i in range(len(layers)):
-        print(i)
-        layer = layers[i]
+        print(f"Currently at layer: {i}")
+        layer = layers[i].to(device)
+        current_kwargs = _move_to_device(caught_kwargs, device)
 
         for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            cur_inp = inps[j:j+1].to(device)
+            layer_out = layer(cur_inp, **current_kwargs)[0]
+            inps[j] = layer_out.squeeze(0).cpu()
+            del cur_inp, layer_out
+
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
-        inps, outs = outs, inps
+
+    model.model.norm.cpu()
+    model.lm_head.cpu()
+    return inps, model.model.norm, model.lm_head
+
+
+# Evaluation on Wikitext2
+@torch.no_grad()
+def llama_eval(model, testenc):
+    print("Evaluating PPL...")
+    testenc_ids = testenc.input_ids
+    seqlen = model.seqlen
+    nsamples = testenc_ids.numel() // seqlen
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+
+    inps, norm, lm_head = _run_layer_loop(model, testenc_ids, nsamples, seqlen)
+    norm = norm.to(device)
+    lm_head = lm_head.to(device)
 
     nlls = []
     for i in range(nsamples):
-        hidden_states = inps[i].unsqueeze(0)
-        if model.model.norm is not None:
-            hidden_states = model.model.norm(hidden_states)
-        lm_logits = model.lm_head(hidden_states)
-        shift_logits = lm_logits[:, :-1, :].contiguous()
-        shift_labels = testenc[:, (i * model.seqlen) : ((i + 1) * model.seqlen)][:, 1:]
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+        hidden_states = norm(inps[i].unsqueeze(0).to(device))
+        logits = lm_head(hidden_states)
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = testenc_ids[:, (i * seqlen):((i+1) * seqlen)][:, 1:].to(device)
+        loss = nn.CrossEntropyLoss()(
+            shift_logits.view(
+                -1, 
+                shift_logits.size(-1)),
+            shift_labels.view(-1),
         )
-        neg_log_likelihood = loss.float() * model.seqlen
-        nlls.append(neg_log_likelihood)
-        
-    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
-    print(f"Perplexity: {ppl.item():3f}")
+        nlls.append(loss.float() * seqlen)
+        del hidden_states, logits, shift_logits, shift_labels
+        torch.cuda.empty_cache()
+
+    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
+    print(f"Perplexity: {ppl.item():.3f}")
 
     model.config.use_cache = use_cache
+    return float(ppl.item())
+
+
+# PPL + KL calculation pipeline
+# Runs eval on both models, keeps them on CPU
+# Then performs the process (for each SAMPLE):
+    # 1. move model to GPU
+    # 2. process
+    # 3. return to CPU
+@torch.no_grad()
+def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen=2048):
+    testenc_ids = testenc.input_ids
+    nsamples = testenc_ids.numel() // seqlen
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # first run evaluation on dense model
+    print("=== Layer loop: dense model ===")
+    model_p = AutoModelForCausalLM.from_pretrained(filepath_dense)
+    model_p.seqlen = seqlen
+    model_p.config.use_cache = False
+    inps_p, norm_p, lm_head_p = _run_layer_loop(model_p, testenc_ids, nsamples, seqlen)
+    del model_p
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # then run evaluation on the pruned model
+    print("=== Layer loop: pruned model ===")
+    model_q = AutoModelForCausalLM.from_pretrained(filepath_pruned)
+    model_q.seqlen = seqlen
+    model_q.config.use_cache = False
+    inps_q, norm_q, lm_head_q = _run_layer_loop(model_q, testenc_ids, nsamples, seqlen)
+    del model_q
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # now PPL and KL
+    print("=== Computing PPL and KL ===")
+    norm_p = norm_p.to(device)
+    norm_q = norm_q.to(device)
+    lm_head_p = lm_head_p.to(device)
+    lm_head_q = lm_head_q.to(device)
+
+    nlls_p = []
+    nlls_q = []
+    kl_accum = []
+
+    # compute both values
+    # loop start
+    for i in range(nsamples):
+        h_p = norm_p(inps_p[i].unsqueeze(0).to(device))
+        h_q = norm_q(inps_q[i].unsqueeze(0).to(device))
+        logits_p = lm_head_p(h_p) # shape: (1, seqlen, vocab_size)
+        logits_q = lm_head_q(h_q) # shape: (1, seqlen, vocab_size)
+
+        # target shape: (seqlen-1, vocab)
+        shift_p = logits_p[:, :-1, :].contiguous().squeeze(0)
+        shift_q = logits_q[:, :-1, :].contiguous().squeeze(0)
+        labels = testenc_ids[:, (i * seqlen):((i+1) * seqlen)][:, 1:].to(device)
+
+        # PPL
+        for shift, nlls in [(shift_p, nlls_p), (shift_q, nlls_q)]:
+            loss = nn.CrossEntropyLoss()(
+                shift.view(-1, shift.size(-1)),
+                labels.view(-1),
+            )
+            nlls.append(loss.float() * seqlen)
+
+        # KL via softmax
+        log_p = torch.log_softmax(shift_p, dim=-1)
+        log_q = torch.log_softmax(shift_q, dim=-1)
+        kl_tokens = (log_p.exp() * (log_p - log_q)).sum(dim=-1)
+        kl_accum.append(kl_tokens.float().cpu())
+
+        del h_p, h_q, logits_p, logits_q
+        del shift_p, shift_q, log_p, log_q, kl_tokens, labels
+        torch.cuda.empty_cache()
+    # loop end
+
+    ppl_p = torch.exp(torch.stack(nlls_p).sum() / (nsamples * seqlen))
+    ppl_q = torch.exp(torch.stack(nlls_q).sum() / (nsamples * seqlen))
+    per_token_kl = torch.cat(kl_accum) # shape: (nsamples * (seqlen - 1))
+
+    kl_results = {
+        "mean_kl":   per_token_kl.mean().item(),
+        "median_kl": per_token_kl.median().item(),
+        "max_kl":    per_token_kl.max().item(),
+        "per_token": per_token_kl,
+    }
+
+    print(f"PPL dense:  {ppl_p.item():.3f}")
+    print(f"PPL pruned: {ppl_q.item():.3f}")
+    print(f"KL(dense || pruned) mean: {kl_results['mean_kl']:.4f}")
+    print(f"KL median: {kl_results['median_kl']:.4f}")
+    print(f"KL max: {kl_results['max_kl']:.4f}")
+
+    return float(ppl_p.item()), float(ppl_q.item()), kl_results
