@@ -216,7 +216,7 @@ class DoubleSparse:
         W2, _, _ = factorize(W=W, 
                              XX=self.H, 
                              mask_type='blocks', 
-                             bsp=int(sparsity/2), 
+                             bsp=sparsity/2, 
                              sp=sparsity, 
                              run_finalize=not self.nofinal)
 
