@@ -76,7 +76,7 @@ def prune_model(model):
         W = layer.weight.data
 
         XX = torch.eye(W.shape[1], device=W.device, dtype=dtype)
-        prod, A, B = factorize(W, XX, mask_type='blocks', bsp=0.25, sp=0.5)
+        prod, A, B = factorize(W, XX, mask_type='blocks_alt', bsp=0.25, sp=0.5)
         mid_dim = A.shape[1]
         layer_R = nn.Linear(layer.in_features, mid_dim, bias=False, dtype=dtype)
         layer_L = nn.Linear(mid_dim, layer.out_features, bias=layer.bias is not None, dtype=dtype)
@@ -178,7 +178,7 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
 DEBUG = True
 
 class DoubleSparse:
-    def __init__(self, layer, nofinal=True):
+    def __init__(self, layer, nofinal=False):
         self.layer = layer
         self.dev = self.layer.weight.device
         W = layer.weight.data.clone()
@@ -215,10 +215,10 @@ class DoubleSparse:
 
         W2, _, _ = factorize(W=W, 
                              XX=self.H, 
-                             mask_type='blocks', 
+                             mask_type='2to4', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
-                             run_finalize=not self.nofinal)
+                             run_finalize=True)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -447,7 +447,9 @@ def llama_eval(model, testenc):
     lm_head = lm_head.to(device)
 
     nlls = []
+    print("In the last loop")
     for i in range(nsamples):
+        print(f"Progress: {i}/{nsamples}")
         hidden_states = norm(inps[i].unsqueeze(0).to(device))
         logits = lm_head(hidden_states)
         shift_logits = logits[:, :-1, :].contiguous()
@@ -459,9 +461,12 @@ def llama_eval(model, testenc):
             shift_labels.view(-1),
         )
         nlls.append(loss.float() * seqlen)
+        print(f"nlls after append: {nlls}")
         del hidden_states, logits, shift_logits, shift_labels
         torch.cuda.empty_cache()
 
+    print("This is getting exponentiated.")
+    print(f"{torch.stack(nlls).sum() / (nsamples * seqlen)}")
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
     print(f"Perplexity: {ppl.item():.3f}")
 
@@ -476,7 +481,7 @@ def llama_eval(model, testenc):
     # 2. process
     # 3. return to CPU
 @torch.no_grad()
-def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen=2048):
+def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen):
     testenc_ids = testenc.input_ids
     nsamples = testenc_ids.numel() // seqlen
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -562,3 +567,91 @@ def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen=2048):
     print(f"KL max: {kl_results['max_kl']:.4f}")
 
     return float(ppl_p.item()), float(ppl_q.item()), kl_results
+
+
+
+torch.cuda.empty_cache()
+gc.collect()
+
+torch.cuda.synchronize()
+torch.cuda.reset_peak_memory_stats()
+
+from transformers import AutoTokenizer, AutoModelForCausalLM
+tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf')
+model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', device_map="auto")
+model.seqlen = model.config.max_position_embeddings
+
+filepath_original = "./../results/llama-2-7b-2to4-colcol/original/"
+filepath_pruned = "./../results/llama-2-7b-2to4-colcol/pruned/"
+
+
+def calibrate(model):
+    model.save_pretrained(filepath_original)
+    model.eval()
+    print("Retrieving C4...")
+    dataloader, _ = get_c4(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
+    print("C4 retrieved.")
+
+    tick = time.time()
+    print("Running calibration...")
+    model = llama_sequential(model, dataloader)
+    tick_after = time.time() - tick
+    minutes = tick_after // 60
+    seconds = tick_after % 60
+    print(f"Calibration finished in {minutes} min {seconds} s, saving model...")
+
+    model.save_pretrained(filepath_pruned)
+    print("Model saved")
+    # _, testloader = get_wikitext2(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
+    # llama_eval(model, testloader)
+    # print("Evaluation finished")
+
+calibrate(model)
+
+SEQLEN   = 4096
+NSAMPLES = 128
+
+from dbsf import factorize
+
+filepath_original = "./../results/llama-2-7b-2to4-colcol/original/"
+filepath_pruned = "./../results/llama-2-7b-2to4-colcol/pruned/"
+
+def get_wikitext2(nsamples, seed, seqlen, tokenizer):
+    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+
+    trainenc = tokenizer(" ".join(traindata['text']), return_tensors='pt')
+    testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
+
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+    return trainloader, testenc
+
+_, testloader = get_wikitext2(NSAMPLES, seed=42, seqlen=SEQLEN, tokenizer=tokenizer)
+
+## this is for PPL+KL
+ppl_dense, ppl_pruned, kl = ppl_kl_pipeline(
+    filepath_dense  = filepath_original,
+    filepath_pruned = filepath_pruned,
+    testenc         = testloader,
+    seqlen          = SEQLEN,
+)
+
+r1 = f"ppl_dense: {ppl_dense}\n"
+r2 = f"ppl_pruned: {ppl_pruned}\n"
+r3 = f"kl_results: {kl}"
+
+result = r1 + r2 + r3
+with open("output.txt", "w") as f:
+    f.write(str(result))
+
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.reset_peak_memory_stats()

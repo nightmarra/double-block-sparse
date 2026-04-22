@@ -63,9 +63,9 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
                 mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
 
             if mask_type == '2to4' and not alt:
-                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=True)
-            if mask_type == '2to4' and alt:
                 mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False)
+            if mask_type == '2to4' and alt:
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=True)
 
             if mask_type == 'hybrid' and not alt:
                 mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity)
@@ -101,7 +101,7 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     if W.shape[0] > W.shape[1]: # > ???
         W = W.T
         transpose = True
-    
+
     nza = int(W.shape[0]**2 * bsp)
     nzb = int(W.numel() * sp - nza)
     
@@ -133,14 +133,14 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     # inner loop
     for itt in range(iters):
         # print(f'iter: {itt}')
-        if itt == 1 and mask_type == '2to4':
+        if itt == 1789 and mask_type == '2to4':
             P_matrix, _, _ = cluster_perm(A, B, Wn, iters=100)
             A = A @ P_matrix
             B = P_matrix.T @ B
             U_a = U_a @ P_matrix
             U_b = P_matrix.T @ U_b
 
-        rho_start = min(1.0, itt / (iters-3))**3 # annealing
+        rho_start = max(1e-3, min(1.0, itt / (iters-3))**3) # annealing
         A, U_a, mask_a = (x.T for x in find_other(
                    B.T, Wn.T, nza, A.T, U_a.T, reg=1e-2, rho_start=rho_start, mask_type=mask_type
                 )
@@ -149,14 +149,14 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
                 A, Wn, nzb, B, U_b, reg=1e-2, rho_start=rho_start, mask_type=mask_type, alt=alt
              )
         
-        # if itt == iters - 1:
-        #     plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
+        if itt == iters - 1:
+            plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
 
     # undo normalization
     if B.shape[1] == norm.shape[0]:
         B = B / norm.unsqueeze(0)
     elif B.shape[0] == norm.shape[0]:
-        B = B / norm.unsqueeze(1)
+        A = A / norm.unsqueeze(1)
     else:
         raise ValueError(f"Norm shape {norm.shape} incompatible with B {B.shape}")
 
@@ -196,17 +196,19 @@ def factorize(W,
               mask_type, 
               bsp=0.25, sp=0.5, 
               mid_dim_scale=1, 
-              run_finalize=False):
+              run_finalize=True):
     W_temp, A_temp, B = _factorize_init(W, XX, mask_type=mask_type, bsp=bsp, sp=sp, mid_dim_scale=mid_dim_scale)
     if not run_finalize:
         return W_temp, A_temp.cpu(), B.cpu()
     
     print("Error pre-finalization: ", (W_temp - W).matmul(XX).matmul((W_temp - W).T).diag().sum().item())
+    print("Frobenius pre-finalization: ", (torch.norm(W_temp - W).item()))
 
     A_final = finalize(XX, W, A_temp, B)
     W_final = A_final.matmul(B)
     assert W_final.shape == W.shape
     print("Error post-finalization: ", (W_final - W).matmul(XX).matmul((W_final - W).T).diag().sum().item())
+    print("Frobenius post-finalization: ", (torch.norm(W_final - W).item()))
     print("Sparsity check: ", ((A_final != 0).sum() + (B != 0).sum()).item() / W.numel())
     
     return W_final, A_final.cpu(), B.cpu()
