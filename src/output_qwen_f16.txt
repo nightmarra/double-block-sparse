@@ -1,0 +1,3 @@
+ppl_dense: 8.988456726074219
+ppl_pruned: 8.988456726074219
+kl_results: {'mean_kl': 0.0, 'median_kl': 0.0, 'max_kl': 0.0, 'per_token': tensor([0., 0., 0.,  ..., 0., 0., 0.])}

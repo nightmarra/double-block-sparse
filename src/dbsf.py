@@ -149,8 +149,8 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
                 A, Wn, nzb, B, U_b, reg=1e-2, rho_start=rho_start, mask_type=mask_type, alt=alt
              )
         
-        if itt == iters - 1:
-            plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
+        # if itt == iters - 1:
+        #     plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
 
     # undo normalization
     if B.shape[1] == norm.shape[0]:
@@ -183,8 +183,8 @@ def finalize(XX, W, A, B):
     U = torch.zeros_like(A_temp)
 
     for _ in range(20):
-        Z = (A_temp + U) * mask    
-        U = U + (A_temp - Z)    
+        Z = (A_temp + U) * mask
+        U = U + (A_temp - Z)
         A_temp = X1inv.matmul(X2 + rho*(Z - U))
 
     A_final = Z.T / norm2

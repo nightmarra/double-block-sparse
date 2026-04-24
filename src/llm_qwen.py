@@ -216,7 +216,7 @@ class DoubleSparse:
 
         W2, _, _ = factorize(W=W, 
                              XX=self.H, 
-                             mask_type='2to4', 
+                             mask_type='blocks_alt', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
                              run_finalize=True)
@@ -357,13 +357,13 @@ def llama_sequential(model, dataloader):
         model,
         dtype=dtype,
         low_zero=False,
-        no_split_module_classes=["LlamaDecoderLayer"],
+        no_split_module_classes=["Qwen3DecoderLayer"],
     )
     device_map = infer_auto_device_map(
         model,
         max_memory=max_memory,
         dtype=dtype,
-        no_split_module_classes=["LlamaDecoderLayer"],
+        no_split_module_classes=["Qwen3DecoderLayer"],
     )
     model = dispatch_model(model, device_map=device_map)
     print(f"Model dispatched on GPUs with device map: {device_map}")
@@ -545,7 +545,14 @@ def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen):
         # KL via softmax
         log_p = torch.log_softmax(shift_p, dim=-1)
         log_q = torch.log_softmax(shift_q, dim=-1)
-        kl_tokens = (log_p.exp() * (log_p - log_q)).sum(dim=-1)
+        # kl_tokens = (log_p.exp() * (log_p - log_q)).sum(dim=-1)
+        chunk_size = 256
+        kl_tokens = torch.zeros(shift_p.shape[0], device=shift_p.device)
+        for i in range(0, shift_p.shape[0], chunk_size):
+            lp = torch.log_softmax(shift_p[i:i+chunk_size], dim=-1)
+            lq = torch.log_softmax(shift_q[i:i+chunk_size], dim=-1)
+            kl_tokens[i:i+chunk_size] = (lp.exp() * (lp - lq)).sum(dim=-1)
+            del lp, lq
         kl_accum.append(kl_tokens.float().cpu())
 
         del h_p, h_q, logits_p, logits_q
@@ -574,6 +581,7 @@ def ppl_kl_pipeline(filepath_dense, filepath_pruned, testenc, seqlen):
 
 
 
+
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -581,34 +589,34 @@ torch.cuda.synchronize()
 torch.cuda.reset_peak_memory_stats()
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-tokenizer = AutoTokenizer.from_pretrained('meta-llama/Meta-Llama-3-8b', use_fast=True)
-# model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', device_map="auto")
-# model.seqlen = model.config.max_position_embeddings
+tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen3-8B')
+# model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
+# model.seqlen = 4096
 
-# filepath_original = "./../results/llama-2-7b-dsf/original/"
-# filepath_pruned = "./../results/llama-2-7b-2to4-colcol/pruned/"
+filepath_original = "./../qwen_pruned_bf16/original/"
+filepath_pruned = "./../qwen_pruned_bf16/pruned/"
 
 
-# def calibrate(model):
-#     model.save_pretrained(filepath_original)
-#     model.eval()
-#     print("Retrieving C4...")
-#     dataloader, _ = get_c4(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
-#     print("C4 retrieved.")
+def calibrate(model):
+    # model.save_pretrained(filepath_original)
+    model.eval()
+    print("Retrieving C4...")
+    dataloader, _ = get_c4(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
+    print("C4 retrieved.")
 
-#     tick = time.time()
-#     print("Running calibration...")
-#     model = llama_sequential(model, dataloader)
-#     tick_after = time.time() - tick
-#     minutes = tick_after // 60
-#     seconds = tick_after % 60
-#     print(f"Calibration finished in {minutes} min {seconds} s, saving model...")
+    tick = time.time()
+    print("Running calibration...")
+    model = llama_sequential(model, dataloader)
+    tick_after = time.time() - tick
+    minutes = tick_after // 60
+    seconds = tick_after % 60
+    print(f"Calibration finished in {minutes} min {seconds} s, saving model...")
 
-#     model.save_pretrained(filepath_pruned)
-#     print("Model saved")
-#     # _, testloader = get_wikitext2(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
-#     # llama_eval(model, testloader)
-#     # print("Evaluation finished")
+    model.save_pretrained(filepath_pruned)
+    print("Model saved")
+    # _, testloader = get_wikitext2(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
+    # llama_eval(model, testloader)
+    # print("Evaluation finished")
 
 # calibrate(model)
 
@@ -616,9 +624,6 @@ SEQLEN   = 4096
 NSAMPLES = 128
 
 from dbsf import factorize
-
-filepath_original = "./../results/llama-3-8b-2x2-blocks/original/"
-filepath_pruned = "./../results/llama-3-8b-2x2-blocks/original/"
 
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
