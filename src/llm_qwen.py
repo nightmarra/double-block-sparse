@@ -219,7 +219,7 @@ class DoubleSparse:
                              mask_type='blocks_alt', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
-                             run_finalize=True)
+                             run_finalize=False)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -590,11 +590,11 @@ torch.cuda.reset_peak_memory_stats()
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen3-8B')
-# model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
-# model.seqlen = 4096
+model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
+model.seqlen = 4096
 
 filepath_original = "./../qwen_pruned_bf16/original/"
-filepath_pruned = "./../qwen_pruned_bf16/pruned/"
+filepath_pruned = "./../qwen_pruned_bf16/pruned_nofinal/"
 
 
 def calibrate(model):
@@ -618,7 +618,7 @@ def calibrate(model):
     # llama_eval(model, testloader)
     # print("Evaluation finished")
 
-# calibrate(model)
+calibrate(model)
 
 SEQLEN   = 4096
 NSAMPLES = 128

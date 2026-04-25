@@ -89,28 +89,32 @@ def _get_mask_2_to_4(
     return mask
 
 
-def plot_masks(mask_a, mask_b, mask_type):
+def plot_masks(mask_a, mask_b, mask_type, numel=16):
     cmap = ListedColormap(['gray', 'lime'])
-    _, axs = plt.subplots(1, 2, figsize=(8, 4))
+    _, axs = plt.subplots(1, 2, figsize=(12, 6))
 
     for ax, mask, title in zip(
         axs,
-        [mask_a[:16, :16], mask_b[:16, :16]],
-        ['mask_a', 'mask_b']
+        [mask_a[:numel, :numel], mask_b[:numel, :numel]],
+        ['A_mask', 'B_mask']
     ):
         _ = ax.imshow(mask, cmap=cmap, vmin=0, vmax=1)
 
-        ax.set_xticks(np.arange(-0.525, 16, 1), minor=True,)
-        ax.set_yticks(np.arange(-0.55, 16, 1), minor=True)
-        ax.grid(which='minor', color='black', linestyle='-', linewidth=0.5)
+        ax.set_xticks(np.arange(-0.525, numel, 1), minor=True)
+        ax.set_yticks(np.arange(-0.575, numel, 1), minor=True)
+        ax.xaxis.set_tick_params(labelsize=12)
+        ax.yaxis.set_tick_params(labelsize=12)
+        ax.grid(which='minor', color='black', linestyle='-', linewidth=0.4)
+        ax.set_title(title, fontsize=16)
 
-        if mask_type == '2to4':
-            for x in np.arange(-0.5, 16, 4):
-                ax.axvline(x=x, color='deepskyblue', linewidth=1.5)
-            for y in np.arange(-0.5, 16, 1):
-                ax.axhline(y=y, color='deepskyblue', linewidth=1.5)
+    if mask_type == '2to4':
+        for x in np.arange(-0.5, numel, 4):
+            axs[1].axvline(x=x, color='b', linewidth=1.5)
+            axs[0].axhline(y=x, color='b', linewidth=1.5)
+        for y in np.arange(-0.5, numel, 1):
+            axs[1].axhline(y=y, color='b', linewidth=1.5)
+            axs[0].axvline(x=y, color='b', linewidth=1.5)
 
-        ax.set_title(title)
 
     plt.tight_layout()
     plt.show()

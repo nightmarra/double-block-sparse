@@ -47,7 +47,7 @@ def test_double_sparse(matrix,
                             sp = total_sp, 
                             mid_dim_scale = mid_dim_scale,
                             mask_type = mask_type,
-                            run_finalize=True
+                            run_finalize=False
     )
 
     frobenius = torch.norm(prod - matrix, p='fro')

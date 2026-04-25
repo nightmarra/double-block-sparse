@@ -63,9 +63,9 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
                 mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
 
             if mask_type == '2to4' and not alt:
-                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False)
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False) # True = rows, False = columns
             if mask_type == '2to4' and alt:
-                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=True)
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False) # True = columns, False = rows
 
             if mask_type == 'hybrid' and not alt:
                 mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity)
@@ -149,8 +149,8 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
                 A, Wn, nzb, B, U_b, reg=1e-2, rho_start=rho_start, mask_type=mask_type, alt=alt
              )
         
-        # if itt == iters - 1:
-        #     plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type)
+        if itt == iters - 1:
+            plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type, numel=32)
 
     # undo normalization
     if B.shape[1] == norm.shape[0]:
