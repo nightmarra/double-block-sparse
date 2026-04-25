@@ -56,9 +56,9 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
                 mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=2)
 
             # if mask_type == 'blocks_alt' and not alt:
-            #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=1)
-            # if mask_type == 'blocks_alt' and alt:
             #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
+            # if mask_type == 'blocks_alt' and alt:
+            #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=1)
             if mask_type == 'blocks_alt':
                 mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
 
@@ -102,7 +102,10 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
         W = W.T
         transpose = True
 
-    nza = int(W.shape[0]**2 * bsp)
+    if W.shape[0] == W.shape[1]:
+        nza = int(W.shape[0]**2 * bsp)
+    else:
+        nza = int(W.shape[0]**2 * bsp*2)
     nzb = int(W.numel() * sp - nza)
     
     if W.shape[1] == norm.shape[0]:
