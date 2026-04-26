@@ -28,7 +28,7 @@ def evaluate_permutation_loss(A, B, W, perm_indices):
     return abs(float(torch.norm(W_approx - W, p='fro')))
 
 
-def cluster_perm(A, B, W, iters=200):
+def cluster_perm(A, B, W):
     """
     Finds permutation matrix P such that APP^TB
     minimizes the 2:4 reconstruction error against W.
@@ -49,24 +49,6 @@ def cluster_perm(A, B, W, iters=200):
         current_perm[group_idx * 4 + pos_in_group] = sorted_idx[i]
     
     best_loss = evaluate_permutation_loss(A, B, W, current_perm)
-    
-    # greedy swap
-    for i in range(iters):
-        if i % 10 == 0:
-            print(i)
-            
-        # pick two random indices to swap
-        idx1, idx2 = torch.randint(0, inner_dim, (2,)).tolist()
-        if idx1 == idx2: 
-            continue
-            
-        proposed_perm = current_perm.clone()
-        proposed_perm[idx1], proposed_perm[idx2] = proposed_perm[idx2], proposed_perm[idx1]
-        
-        loss = evaluate_permutation_loss(A, B, W, proposed_perm)
-        if loss < best_loss:
-            best_loss = loss
-            current_perm = proposed_perm
             
     P = torch.zeros((inner_dim, inner_dim), device=A.device, dtype=A.dtype)
     P[torch.arange(inner_dim), current_perm] = 1.0

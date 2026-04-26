@@ -1,11 +1,87 @@
 import torch
 
-from dbsf import find_other
 from masks import mag_prune
 from masks import _mag_prune_mask
 from masks import _block_mask
 from masks import _get_mask_2_to_4
 from masks import plot_masks
+
+
+# inner loop of the ||W-AB||_2 minization algorithm
+# ADMM is performed for m (iters) iterations
+def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho=1, iters=5, prune_iters=2):
+    # Z_0 = identity
+    # U_0 = zero matrix
+    # X can be:
+    # -> A, when we're solving for B (Z) and U_b (U)
+    # -> B, when we're solving for A (Z) and U_a (U)
+    X, W, Z, U = X.float(), W.float(), Z.float(), U.float()
+
+    # normalization with diag. reg.
+    norm2 = torch.linalg.vector_norm(X, dim=0) + 1e-8
+    An = X / norm2
+    XTX = An.T.matmul(An)
+    
+    mean_diag = XTX.trace() / XTX.shape[0]
+    if reg > 0:
+        XTX.diagonal().add_(mean_diag * reg)
+    
+    XTW = An.T.matmul(W)
+
+    # XTX_inv = torch.inverse(XTX + torch.eye(XTX.shape[1], device=XTX.device)*rho)
+    # XTX_inv2 = torch.inverse(XTX + torch.eye(XTX.shape[1], device=XTX.device)*rho_start)
+    XTX.diagonal().add_(rho_start)
+    L2 = torch.linalg.cholesky(XTX)
+
+    XTX.diagonal().add_(rho - rho_start)
+    L = torch.linalg.cholesky(XTX)
+    ########################
+
+    U = U * norm2.unsqueeze(1)
+    Z = Z * norm2.unsqueeze(1)
+
+    # W_hat = XTX_inv2.matmul(XTW + rho_start*(Z-U))
+    RHS_start = XTW + rho_start * (Z - U)
+    W_hat = torch.cholesky_solve(RHS_start, L2)
+    ########################
+
+    bsparsity = min(0.99, 1 - nnz/W_hat.numel()) # 0.76 or 0.84
+
+    for itt in range(iters):            
+        if itt < prune_iters:
+            if not mask_type:
+                mask = _mag_prune_mask(W_hat+U, bsparsity)
+            if mask_type == 'blocks':
+                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=2)
+
+            # if mask_type == 'blocks_alt' and not alt:
+            #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
+            # if mask_type == 'blocks_alt' and alt:
+            #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=1)
+            if mask_type == 'blocks_alt':
+                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
+
+            if mask_type == '2to4' and not alt:
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False) # True = rows, False = columns
+            if mask_type == '2to4' and alt:
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity, transpose=False) # True = columns, False = rows
+
+            if mask_type == 'hybrid' and not alt:
+                mask = _get_mask_2_to_4(W_hat=W_hat, U=U, bsparsity=bsparsity)
+            if mask_type == 'hybrid' and alt:
+                mask = _mag_prune_mask(W_hat+U, bsparsity)
+
+        # ADMM iterations
+        Z = mask * (W_hat + U)
+        U = U + (W_hat - Z)
+        # W_hat = XTX_inv.matmul(XTW + rho*(Z-U))
+        RHS = XTW + rho * (Z - U)
+        W_hat = torch.cholesky_solve(RHS, L)
+        ########################
+
+    return (Z) / norm2.unsqueeze(1), U / norm2.unsqueeze(1), mask
+
+
 
 
 def apply_tetris_reordering(A: torch.Tensor, B: torch.Tensor, prune_fn, epsilon: float = 1e-5, max_outer_iters: int = 10, max_inner_iters: int = 100):
@@ -101,7 +177,10 @@ def _factorize_tetris(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters
         W = W.T
         transpose = True
     
-    nza = int(W.shape[0]**2 * bsp*2)
+    if W.shape[0] == W.shape[1]:
+        nza = int(W.shape[0]**2 * bsp)
+    else:
+        nza = int(W.shape[0]**2 * bsp*2)
     nzb = int(W.numel() * sp - nza)
     
     if W.shape[1] == norm.shape[0]:
@@ -160,7 +239,7 @@ def _factorize_tetris(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters
     if B.shape[1] == norm.shape[0]:
         B = B / norm.unsqueeze(0)
     elif B.shape[0] == norm.shape[0]:
-        B = B / norm.unsqueeze(1)
+        A = A / norm.unsqueeze(1)
     else:
         raise ValueError(f"Norm shape {norm.shape} incompatible with B {B.shape}")
 

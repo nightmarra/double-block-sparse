@@ -6,6 +6,7 @@ from masks import _block_mask
 from masks import _get_mask_2_to_4
 from masks import plot_masks
 from norm_perm import cluster_perm
+# from tetris import _factorize_tetris
 
 
 # inner loop of the ||W-AB||_2 minization algorithm
@@ -125,6 +126,8 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     else:
         A = torch.rand(size=[W.shape[0], int(mid_dim_scale*W.shape[0])], device=W.device, dtype=torch.float32)  # rand
         B = torch.rand(size=[int(mid_dim_scale*W.shape[0]), W.shape[0]], device=W.device, dtype=torch.float32)  # rand
+        # A = torch.eye(n = W.shape[0], m = int(mid_dim_scale*W.shape[0]), device=W.device, dtype=torch.float32)  # rand
+        # B = torch.eye(n = int(mid_dim_scale*W.shape[0]), m = W.shape[0], device=W.device, dtype=torch.float32)  # rand
 
     U_a = torch.zeros_like(A)
     U_b = torch.zeros_like(B)
@@ -136,8 +139,8 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     # inner loop
     for itt in range(iters):
         # print(f'iter: {itt}')
-        if itt == 1789 and mask_type == '2to4':
-            P_matrix, _, _ = cluster_perm(A, B, Wn, iters=100)
+        if itt == 1 and mask_type == '2to4':
+            P_matrix, _, _ = cluster_perm(A, B, Wn)
             A = A @ P_matrix
             B = P_matrix.T @ B
             U_a = U_a @ P_matrix

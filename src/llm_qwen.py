@@ -219,7 +219,7 @@ class DoubleSparse:
                              mask_type='blocks_alt', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
-                             run_finalize=False)
+                             run_finalize=True)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -594,7 +594,7 @@ model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
 model.seqlen = 4096
 
 filepath_original = "./../qwen_pruned_bf16/original/"
-filepath_pruned = "./../qwen_pruned_bf16/pruned_nofinal/"
+filepath_pruned = "./../qwen_pruned_bf16/pruned_fix_rho_1/"
 
 
 def calibrate(model):
