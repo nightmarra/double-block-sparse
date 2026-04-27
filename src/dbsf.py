@@ -106,7 +106,7 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
     if W.shape[0] == W.shape[1]:
         nza = int(W.shape[0]**2 * bsp)
     else:
-        nza = int(W.shape[0]**2 * bsp*2)
+        nza = int(W.shape[0]**2 * bsp)
     nzb = int(W.numel() * sp - nza)
     
     if W.shape[1] == norm.shape[0]:
@@ -204,11 +204,11 @@ def factorize(W,
               mid_dim_scale=1, 
               run_finalize=True):
     W_temp, A_temp, B = _factorize_init(W, XX, mask_type=mask_type, bsp=bsp, sp=sp, mid_dim_scale=mid_dim_scale)
+    print("Frobenius pre-finalization: ", (torch.norm(W_temp - W).item()))
     if not run_finalize:
         return W_temp, A_temp.cpu(), B.cpu()
     
     print("Error pre-finalization: ", (W_temp - W).matmul(XX).matmul((W_temp - W).T).diag().sum().item())
-    print("Frobenius pre-finalization: ", (torch.norm(W_temp - W).item()))
 
     A_final = finalize(XX, W, A_temp, B)
     W_final = A_final.matmul(B)

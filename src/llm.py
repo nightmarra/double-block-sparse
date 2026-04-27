@@ -77,7 +77,7 @@ def prune_model(model):
         W = W.float()
 
         XX = torch.eye(W.shape[1], device=W.device, dtype=W.dtype)
-        prod, A, B = factorize(W, XX, mask_type='blocks_alt', bsp=0.25, sp=0.5, run_finalize=False)
+        prod, A, B = factorize(W, XX, mask_type='blocks', bsp=0.25, sp=0.5, run_finalize=False)
         mid_dim = A.shape[1]
         layer_R = nn.Linear(layer.in_features, mid_dim, bias=False, dtype=dtype)
         layer_L = nn.Linear(mid_dim, layer.out_features, bias=layer.bias is not None, dtype=dtype)
@@ -219,7 +219,7 @@ class DoubleSparse:
                              mask_type='2to4', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
-                             run_finalize=True)
+                             run_finalize=False)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -581,44 +581,44 @@ torch.cuda.synchronize()
 torch.cuda.reset_peak_memory_stats()
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-tokenizer = AutoTokenizer.from_pretrained('meta-llama/Meta-Llama-3-8b', use_fast=True)
-# model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', device_map="auto")
-# model.seqlen = model.config.max_position_embeddings
+tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf')
+model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', device_map="auto")
+model.seqlen = model.config.max_position_embeddings
 
-# filepath_original = "./../results/llama-2-7b-dsf/original/"
-# filepath_pruned = "./../results/llama-2-7b-2to4-colcol/pruned/"
+filepath_original = "./../results/llama-2-7b-dsf/original/"
+filepath_pruned = "./../results/llama-2-7b-2to4-colrow/pruned_nofinal/"
 
 
-# def calibrate(model):
-#     model.save_pretrained(filepath_original)
-#     model.eval()
-#     print("Retrieving C4...")
-#     dataloader, _ = get_c4(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
-#     print("C4 retrieved.")
+def calibrate(model):
+    # model.save_pretrained(filepath_original)
+    model.eval()
+    print("Retrieving C4...")
+    dataloader, _ = get_c4(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
+    print("C4 retrieved.")
 
-#     tick = time.time()
-#     print("Running calibration...")
-#     model = llama_sequential(model, dataloader)
-#     tick_after = time.time() - tick
-#     minutes = tick_after // 60
-#     seconds = tick_after % 60
-#     print(f"Calibration finished in {minutes} min {seconds} s, saving model...")
+    tick = time.time()
+    print("Running calibration...")
+    model = llama_sequential(model, dataloader)
+    tick_after = time.time() - tick
+    minutes = tick_after // 60
+    seconds = tick_after % 60
+    print(f"Calibration finished in {minutes} min {seconds} s, saving model...")
 
-#     model.save_pretrained(filepath_pruned)
-#     print("Model saved")
+    model.save_pretrained(filepath_pruned)
+    print("Model saved")
 #     # _, testloader = get_wikitext2(NSAMPLES, seed=42, seqlen=model.seqlen, tokenizer=tokenizer)
 #     # llama_eval(model, testloader)
 #     # print("Evaluation finished")
 
-# calibrate(model)
+calibrate(model)
 
 SEQLEN   = 4096
 NSAMPLES = 128
 
 from dbsf import factorize
 
-filepath_original = "./../results/llama-3-8b-2x2-blocks/original/"
-filepath_pruned = "./../results/llama-3-8b-2x2-blocks/original/"
+filepath_original = "./../results/llama-2-7b-dsf/original/"
+filepath_pruned = "./../results/llama-2-7b-2to4-colrow/pruned_nofinal/"
 
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
