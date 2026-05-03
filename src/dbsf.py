@@ -54,7 +54,7 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
             if not mask_type:
                 mask = _mag_prune_mask(W_hat+U, bsparsity)
             if mask_type == 'blocks':
-                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=2)
+                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=16, cols=16)
 
             # if mask_type == 'blocks_alt' and not alt:
             #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
@@ -155,8 +155,8 @@ def _factorize_init(W, XX, mask_type, bsp=0.25, sp=0.5, mid_dim_scale=1, iters=4
                 A, Wn, nzb, B, U_b, reg=1e-2, rho_start=rho_start, mask_type=mask_type, alt=alt
              )
         
-        if itt == iters - 1:
-            plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type, numel=32)
+        # if itt == iters - 1:
+        #     plot_masks(mask_a.cpu(), mask_b.cpu(), mask_type, numel=16)
 
     # undo normalization
     if B.shape[1] == norm.shape[0]:

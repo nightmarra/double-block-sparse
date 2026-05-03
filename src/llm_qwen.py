@@ -216,7 +216,7 @@ class DoubleSparse:
 
         W2, _, _ = factorize(W=W, 
                              XX=self.H, 
-                             mask_type='blocks_alt', 
+                             mask_type='2to4', 
                              bsp=sparsity/2, 
                              sp=sparsity, 
                              run_finalize=True)
@@ -594,7 +594,7 @@ model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
 model.seqlen = 4096
 
 filepath_original = "./../qwen_pruned_bf16/original/"
-filepath_pruned = "./../qwen_pruned_bf16/pruned_fix_rho_1/"
+filepath_pruned = "./../qwen_pruned_bf16/pruned_2to4_rho_05_suboptimalsplit/"
 
 
 def calibrate(model):

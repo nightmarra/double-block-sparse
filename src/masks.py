@@ -100,8 +100,8 @@ def plot_masks(mask_a, mask_b, mask_type, numel=16):
     ):
         _ = ax.imshow(mask, cmap=cmap, vmin=0, vmax=1)
 
-        ax.set_xticks(np.arange(-0.525, numel, 1), minor=True)
-        ax.set_yticks(np.arange(-0.575, numel, 1), minor=True)
+        ax.set_xticks(np.arange(-0.5, numel, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5125, numel, 1), minor=True)
         ax.xaxis.set_tick_params(labelsize=12)
         ax.yaxis.set_tick_params(labelsize=12)
         ax.grid(which='minor', color='black', linestyle='-', linewidth=0.4)
