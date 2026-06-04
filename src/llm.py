@@ -14,6 +14,18 @@ import time
 
 from dbsf import factorize
 
+# W: weight matrix (C_out, C_in);
+# X: input matrix (N * L, C_in);
+# s: desired sparsity, between 0 and 1;
+def prune(W, X, s):
+    metric = W.abs() * X.norm(p=2, dim=0)
+
+    _, sorted_idx = torch.sort(metric, dim=1)
+    pruned_idx = sorted_idx[:,:int(W.shape[1] * s)]
+    W.scatter_(dim=1, index=pruned_idx, value=0)
+
+    return W
+
 
 def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
     if type(module) in layers and "lm_head" not in name:
@@ -55,65 +67,65 @@ def test_perplexity_and_response(model, tokenizer):
 
 ### ZERO-SHOT pruning ###
 
-class FactorizedLinear(nn.Sequential):
-    '''Helper to wrap L and R into a single unit'''
-    def __init__(self, layer_R, layer_L):
-        super().__init__(layer_R, layer_L)
+# class FactorizedLinear(nn.Sequential):
+#     '''Helper to wrap L and R into a single unit'''
+#     def __init__(self, layer_R, layer_L):
+#         super().__init__(layer_R, layer_L)
 
-@torch.no_grad()
-def prune_model(model):
-    layers_to_replace = []
-    for name, module in model.named_modules():
-        if name == 'lm_head':
-            continue
-        if isinstance(module, nn.Linear):
-            layers_to_replace.append((name, module))
-    print(len(layers_to_replace))
+# @torch.no_grad()
+# def prune_model(model):
+#     layers_to_replace = []
+#     for name, module in model.named_modules():
+#         if name == 'lm_head':
+#             continue
+#         if isinstance(module, nn.Linear):
+#             layers_to_replace.append((name, module))
+#     print(len(layers_to_replace))
 
-    for name, layer in layers_to_replace:
-        print(f"\nCurrently pruning: {name}")
-        dtype = layer.weight.dtype
-        W = layer.weight.data
-        W = W.float()
+#     for name, layer in layers_to_replace:
+#         print(f"\nCurrently pruning: {name}")
+#         dtype = layer.weight.dtype
+#         W = layer.weight.data
+#         W = W.float()
 
-        XX = torch.eye(W.shape[1], device=W.device, dtype=W.dtype)
-        prod, A, B = factorize(W, XX, mask_type='blocks', bsp=0.25, sp=0.5, run_finalize=False)
-        mid_dim = A.shape[1]
-        layer_R = nn.Linear(layer.in_features, mid_dim, bias=False, dtype=dtype)
-        layer_L = nn.Linear(mid_dim, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+#         XX = torch.eye(W.shape[1], device=W.device, dtype=W.dtype)
+#         prod, A, B = factorize(W, XX, mask_type='blocks', bsp=0.25, sp=0.5, run_finalize=False)
+#         mid_dim = A.shape[1]
+#         layer_R = nn.Linear(layer.in_features, mid_dim, bias=False, dtype=dtype)
+#         layer_L = nn.Linear(mid_dim, layer.out_features, bias=layer.bias is not None, dtype=dtype)
 
-        frobenius = torch.norm(prod - W, p='fro')
-        print(f'Frobenius norm: {frobenius.item()}')
+#         frobenius = torch.norm(prod - W, p='fro')
+#         print(f'Frobenius norm: {frobenius.item()}')
 
-        A_cpu = A.cpu()
-        B_cpu = B.cpu()
+#         A_cpu = A.cpu()
+#         B_cpu = B.cpu()
 
-        nz_count_A = torch.count_nonzero(A_cpu).item()
-        nz_count_B = torch.count_nonzero(B_cpu).item()
+#         nz_count_A = torch.count_nonzero(A_cpu).item()
+#         nz_count_B = torch.count_nonzero(B_cpu).item()
 
-        n_a = A_cpu.size(dim=0)
-        m_a = A_cpu.size(dim=1)
-        n_b = B_cpu.size(dim=0)
-        m_b = B_cpu.size(dim=1)
+#         n_a = A_cpu.size(dim=0)
+#         m_a = A_cpu.size(dim=1)
+#         n_b = B_cpu.size(dim=0)
+#         m_b = B_cpu.size(dim=1)
 
-        print(f'A has {nz_count_A} non-zero entries ({round(nz_count_A/(n_a*m_a)*100, 1)}%)')
-        print(f'B has {nz_count_B} non-zero entries ({round(nz_count_B/(n_b*m_b)*100, 1)}%)')
+#         print(f'A has {nz_count_A} non-zero entries ({round(nz_count_A/(n_a*m_a)*100, 1)}%)')
+#         print(f'B has {nz_count_B} non-zero entries ({round(nz_count_B/(n_b*m_b)*100, 1)}%)')
 
-        layer_R.weight.copy_(B.to(dtype))
-        layer_L.weight.copy_(A.to(dtype))
+#         layer_R.weight.copy_(B.to(dtype))
+#         layer_L.weight.copy_(A.to(dtype))
 
-        if '.' in name:
-            parent_name, attr_name = name.rsplit('.', 1)
-            parent = dict(model.named_modules())[parent_name]
-        else:
-            parent = model
-            attr_name = name
+#         if '.' in name:
+#             parent_name, attr_name = name.rsplit('.', 1)
+#             parent = dict(model.named_modules())[parent_name]
+#         else:
+#             parent = model
+#             attr_name = name
             
-        setattr(parent, attr_name, FactorizedLinear(layer_R, layer_L))
-        torch.cuda.empty_cache()
+#         setattr(parent, attr_name, FactorizedLinear(layer_R, layer_L))
+#         torch.cuda.empty_cache()
 
-    filepath = "./../qwen_pruned/"
-    model.save_pretrained(filepath)
+#     filepath = "./../qwen_pruned/"
+#     model.save_pretrained(filepath)
 
 ##########################
 
@@ -178,6 +190,43 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
 
 DEBUG = True
 
+
+class Wanda:
+    def __init__(self, layer):
+        self.layer = layer
+        self.dev = layer.weight.device
+        self.scaler_row = None
+        self.nsamples = 0
+
+    def add_batch(self, inp, out):
+        if len(inp.shape) == 3:
+            inp = inp.reshape(-1, inp.shape[-1])
+
+        inp = inp.float()
+
+        if self.scaler_row is None:
+            self.scaler_row = torch.zeros(inp.shape[1], device=inp.device)
+
+        self.scaler_row += (inp ** 2).sum(dim=0)
+        self.nsamples += inp.shape[0]
+
+    def fasterprune(self, sparsity):
+        W = self.layer.weight.data.float()
+
+        act = torch.sqrt(self.scaler_row / self.nsamples)
+        metric = W.abs() * act.reshape(1, -1)
+
+        k = int(metric.shape[1] * sparsity)
+
+        idx = torch.topk(metric, k, dim=1, largest=False).indices
+        W.scatter_(1, idx, 0)
+
+        self.layer.weight.data = W.to(self.layer.weight.dtype)
+
+    def free(self):
+        torch.cuda.empty_cache()
+
+
 class DoubleSparse:
     def __init__(self, layer, nofinal=False):
         self.layer = layer
@@ -214,12 +263,13 @@ class DoubleSparse:
         W = W.float()
         tick = time.time()
 
-        W2, _, _ = factorize(W=W, 
-                             XX=self.H, 
-                             mask_type='2to4', 
-                             bsp=sparsity/2, 
-                             sp=sparsity, 
-                             run_finalize=False)
+        W2 = prune(W, self.H, 0.5)
+        # W2, _, _ = factorize(W=W, 
+        #                      XX=self.H, 
+        #                      mask_type=None, 
+        #                      bsp=sparsity/2, 
+        #                      sp=sparsity, 
+        #                      run_finalize=True)
 
         torch.cuda.synchronize()
         print('time %.2f' % (time.time() - tick))
@@ -312,7 +362,7 @@ def llama_sequential(model, dataloader):
             subset = {n: full[n] for n in names}
             gpts = {}
             for name in subset:
-                gpts[name] = DoubleSparse(subset[name], nofinal=NO_FINAL)
+                gpts[name] = Wanda(subset[name])
 
             def add_batch(name):
                 def tmp(_, inp, out):
@@ -586,7 +636,7 @@ model = AutoModelForCausalLM.from_pretrained('meta-llama/Llama-2-7b-hf', device_
 model.seqlen = model.config.max_position_embeddings
 
 filepath_original = "./../results/llama-2-7b-dsf/original/"
-filepath_pruned = "./../results/llama-2-7b-2to4-colrow/pruned_nofinal/"
+filepath_pruned = "./../results/llama-2-7b-wanda/"
 
 
 def calibrate(model):
@@ -618,7 +668,7 @@ NSAMPLES = 128
 from dbsf import factorize
 
 filepath_original = "./../results/llama-2-7b-dsf/original/"
-filepath_pruned = "./../results/llama-2-7b-2to4-colrow/pruned_nofinal/"
+filepath_pruned = "./../results/llama-2-7b-wanda/"
 
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
@@ -653,7 +703,7 @@ r2 = f"ppl_pruned: {ppl_pruned}\n"
 r3 = f"kl_results: {kl}"
 
 result = r1 + r2 + r3
-with open("output.txt", "w") as f:
+with open("llama2wanda.txt", "w") as f:
     f.write(str(result))
 
 gc.collect()
