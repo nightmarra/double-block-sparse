@@ -178,6 +178,42 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
 
 DEBUG = True
 
+class Wanda:
+    def __init__(self, layer):
+        self.layer = layer
+        self.dev = layer.weight.device
+        self.scaler_row = None
+        self.nsamples = 0
+
+    def add_batch(self, inp, out):
+        if len(inp.shape) == 3:
+            inp = inp.reshape(-1, inp.shape[-1])
+
+        inp = inp.float()
+
+        if self.scaler_row is None:
+            self.scaler_row = torch.zeros(inp.shape[1], device=inp.device)
+
+        self.scaler_row += (inp ** 2).sum(dim=0)
+        self.nsamples += inp.shape[0]
+
+    def fasterprune(self, sparsity):
+        W = self.layer.weight.data.float()
+
+        act = torch.sqrt(self.scaler_row / self.nsamples)
+        metric = W.abs() * act.reshape(1, -1)
+
+        k = int(metric.shape[1] * sparsity)
+
+        idx = torch.topk(metric, k, dim=1, largest=False).indices
+        W.scatter_(1, idx, 0)
+
+        self.layer.weight.data = W.to(self.layer.weight.dtype)
+
+    def free(self):
+        torch.cuda.empty_cache()
+
+
 class DoubleSparse:
     def __init__(self, layer, nofinal=False):
         self.layer = layer
@@ -312,7 +348,7 @@ def llama_sequential(model, dataloader):
             subset = {n: full[n] for n in names}
             gpts = {}
             for name in subset:
-                gpts[name] = DoubleSparse(subset[name], nofinal=NO_FINAL)
+                gpts[name] = Wanda(subset[name])
 
             def add_batch(name):
                 def tmp(_, inp, out):
@@ -594,7 +630,7 @@ model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-8B', device_map="auto")
 model.seqlen = 4096
 
 filepath_original = "./../qwen_pruned_bf16/original/"
-filepath_pruned = "./../qwen_pruned_bf16/pruned_2to4_rho_05_suboptimalsplit/"
+filepath_pruned = "./../qwen_pruned_bf16/pruned_wanda/"
 
 
 def calibrate(model):
@@ -658,7 +694,7 @@ r2 = f"ppl_pruned: {ppl_pruned}\n"
 r3 = f"kl_results: {kl}"
 
 result = r1 + r2 + r3
-with open("output.txt", "w") as f:
+with open("qwen3wanda.txt", "w") as f:
     f.write(str(result))
 
 gc.collect()

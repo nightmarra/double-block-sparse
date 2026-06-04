@@ -29,10 +29,6 @@ def evaluate_permutation_loss(A, B, W, perm_indices):
 
 
 def cluster_perm(A, B, W):
-    """
-    Finds permutation matrix P such that APP^TB
-    minimizes the 2:4 reconstruction error against W.
-    """
     inner_dim = A.shape[1]
     if inner_dim % 4 != 0:
         raise ValueError("Inner dimension must be divisible by 4 for 2:4 sparsity.")

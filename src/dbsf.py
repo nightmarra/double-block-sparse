@@ -11,7 +11,7 @@ from norm_perm import cluster_perm
 
 # inner loop of the ||W-AB||_2 minization algorithm
 # ADMM is performed for m (iters) iterations
-def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho=1, iters=5, prune_iters=2):
+def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.5, rho=0.5, iters=5, prune_iters=2):
     # Z_0 = identity
     # U_0 = zero matrix
     # X can be:
@@ -54,8 +54,7 @@ def find_other(X, W, nnz, Z, U, mask_type, alt=False, reg=0, rho_start=0.03, rho
             if not mask_type:
                 mask = _mag_prune_mask(W_hat+U, bsparsity)
             if mask_type == 'blocks':
-                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=16, cols=16)
-
+                mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=2, cols=2)
             # if mask_type == 'blocks_alt' and not alt:
             #     mask = _block_mask(W_hat=W_hat, U=U, bsparsity=bsparsity, rows=1, cols=2)
             # if mask_type == 'blocks_alt' and alt:
