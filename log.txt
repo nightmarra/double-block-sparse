@@ -241,3 +241,22 @@ kl sa dá pri merani
 6) llama-2-7b 2x1_nofinal c4+w [3 h 20 min]
 7) llama-2-7b 2x1_nofinal c4+w [3 h 20 min]
 
+qwen3-dsf
+ppl_dense: 8.99531364440918
+ppl_pruned: 9.295764923095703
+kl_results: {'mean_kl': 0.09952230006456375, 'median_kl': 0.03515625, 'max_kl': 17.75, 'per_token': tensor([0.3125, 0.1729, 0.2520,  ..., 0.0066, 0.0062, 0.0256])}
+
+qwen3-wanda
+ppl_dense: 8.99531364440918
+ppl_pruned: 10.48287582397461
+kl_results: {'mean_kl': 0.31192103028297424, 'median_kl': 0.1328125, 'max_kl': 45.0, 'per_token': tensor([1.3828, 0.6055, 0.2227,  ..., 0.0109, 0.0364, 0.3223])}
+
+llama2-dsf
+ppl_dense: 5.1166839599609375
+ppl_pruned: 5.674592018127441
+kl_results: {'mean_kl': 0.10631308704614639, 'median_kl': 0.05377197265625, 'max_kl': 9.5703125, 'per_token': tensor([2.4512, 0.0396, 0.1157,  ..., 0.0060, 0.0465, 0.0635])}
+
+llama2-wanda
+ppl_dense: 5.1166839599609375
+ppl_pruned: 6.443181037902832
+kl_results: {'mean_kl': 0.21477434039115906, 'median_kl': 0.11126708984375, 'max_kl': 10.9609375, 'per_token': tensor([3.9277, 0.0908, 0.3113,  ..., 0.0704, 0.1089, 0.0252])}
